@@ -17,7 +17,7 @@
 | [writing01r07](./writing01r07/) | 6 | 45 KB | 候选 |
 | [writing01r08](./writing01r08/) | 6 | 75 KB | 候选 |
 | [writing01r09](./writing01r09/) | 6 | 30 KB | 候选 |
-| [writing01r10](./writing01r10/) | 8 | 64 KB | 候选 |
+| [writing01r10](./writing01r10/) | 9 | 64 KB | 候选 |
 
 ## 包内容速览
 

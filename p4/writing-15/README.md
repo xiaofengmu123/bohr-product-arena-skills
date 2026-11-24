@@ -17,7 +17,7 @@
 | [writing15r07](./writing15r07/) | 5 | 40 KB | 候选 |
 | [writing15r08](./writing15r08/) | 5 | 36 KB | 候选 |
 | [writing15r09](./writing15r09/) | 8 | 55 KB | 候选 |
-| [writing15r10](./writing15r10/) | 6 | 44 KB | 候选 |
+| [writing15r10](./writing15r10/) | 7 | 45 KB | 候选 |
 
 ## 包内容速览
 

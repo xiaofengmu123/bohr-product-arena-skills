@@ -16,7 +16,7 @@
 | [library02r06](./library02r06/) | 6 | 70 KB | 候选 |
 | [library02r07](./library02r07/) | 6 | 76 KB | 候选 |
 | [library02r08](./library02r08/) | 6 | 75 KB | 候选 |
-| [library02r10](./library02r10/) | 6 | 79 KB | 候选 |
+| [library02r10](./library02r10/) | 7 | 79 KB | 候选 |
 
 ## 包内容速览
 

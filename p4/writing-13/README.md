@@ -17,7 +17,7 @@
 | [writing13r07](./writing13r07/) | 6 | 41 KB | 候选 |
 | [writing13r08](./writing13r08/) | 6 | 50 KB | 候选 |
 | [writing13r09](./writing13r09/) | 5 | 29 KB | 候选 |
-| [writing13r10](./writing13r10/) | 6 | 48 KB | 候选 |
+| [writing13r10](./writing13r10/) | 7 | 48 KB | 候选 |
 
 ## 包内容速览
 

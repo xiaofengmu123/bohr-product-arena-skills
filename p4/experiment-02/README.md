@@ -15,7 +15,7 @@
 | [experiment02r05](./experiment02r05/) | 6 | 54 KB | 候选 |
 | [experiment02r06](./experiment02r06/) | 6 | 181 KB | 候选 |
 | [experiment02r07](./experiment02r07/) | 6 | 114 KB | 候选 |
-| [experiment02r08](./experiment02r08/) | 6 | 89 KB | 候选 |
+| [experiment02r08](./experiment02r08/) | 7 | 89 KB | 候选 |
 | [experiment02r09](./experiment02r09/) | 6 | 53 KB | 候选 |
 | [experiment02r10](./experiment02r10/) | 6 | 60 KB | 候选 |
 
