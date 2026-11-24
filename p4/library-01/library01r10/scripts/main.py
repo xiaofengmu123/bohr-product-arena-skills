@@ -1,76 +1,89 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""main.py - thin CLI entry for the library repair pipeline.
+"""main.py — thin CLI entry for the library-repair skill.
 
-All implementation lives in core_impl.py. This file only parses arguments,
-resolves defaults, and dispatches. It is intentionally small so that the
-skill's behavior is easy to audit.
+Delegates all implementation to core_impl.py.  Use relative invocation from the
+skill root:
+
+    python3 -B scripts/main.py --skeleton-only
+    python3 -B scripts/main.py
+    python3 -B scripts/main.py --update patch.json --result /app/output/result.json
+    python3 -B scripts/main.py --check /app/output/result.json --case-json /input/case.json
+
+Defaults mirror the runtime contract: input=/input, output=/app/output,
+work=/app/work.
 """
 
+import argparse
 import os
-import runpy
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 
-USAGE = """usage: main.py <command> [options]
-
-commands:
-  run            scan /input, build the intermediate representation (IR),
-                 run deterministic analysis stages, and emit editable
-                 artifacts + /app/output/result.json. This is the default.
-  skeleton       write a minimal, valid partial result.json immediately
-                 (case_id + contract placeholders + status=partial) without
-                 scanning the library. Use this first to satisfy the
-                 early-partial-deliverable requirement.
-  check          validate an existing result.json against the input contract
-                 and the on-disk artifacts (schema + completeness + determinism
-                 hints). Exit code 0 on pass, 1 on failure.
-
-options:
-  --case-json PATH   input case file        (default: /input/case.json)
-  --task-path PATH   task markdown          (default: /input/task.md)
-  --input-root DIR   read-only source tree  (default: /input)
-  --output-dir DIR   editable artifacts     (default: /app/output)
-  --work-dir DIR     intermediate IR        (default: /app/work)
-  --decisions PATH   optional semantic overlay (agent-authored JSON)
-  --result PATH      result.json to check   (check command; default:
-                     /app/output/result.json)
-  --help, -h         show this help
-
-exit codes:
-  0  success / check passed
-  1  check failed or unknown argument
-  2  output-directory write failure after a skeleton was preserved
-"""
+import core_impl as core
 
 
-def _help() -> None:
-    print(USAGE)
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="main.py",
+        description="Deterministic document-library repair: crawl -> analyze -> render.",
+    )
+    p.add_argument("--case-json", default="/input/case.json",
+                   help="path to case.json (default: /input/case.json)")
+    p.add_argument("--task-path", default="/input/task.md",
+                   help="path to task.md (default: /input/task.md)")
+    p.add_argument("--input-root", default="/input",
+                   help="input material root (default: /input)")
+    p.add_argument("--output-dir", default="/app/output",
+                   help="final artifacts directory (default: /app/output)")
+    p.add_argument("--work-dir", default="/app/work",
+                   help="intermediate work directory (default: /app/work)")
+    p.add_argument("--result", default="/app/output/result.json",
+                   help="result.json path (default: /app/output/result.json)")
+    p.add_argument("--hash-limit", type=int, default=None,
+                   help="content-hash size limit in bytes (default: 2097152)")
+    p.add_argument("--skeleton-only", action="store_true",
+                   help="write only the partial result skeleton (phase 0)")
+    p.add_argument("--update", metavar="PATCH",
+                   help="deep-merge a JSON patch into result.json")
+    p.add_argument("--check", metavar="RESULT",
+                   help="validate a result.json against case.json contract")
+    return p
 
 
-def main(argv=None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if "--help" in argv or "-h" in argv or not argv:
-        _help()
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+
+    if args.check:
+        ok, issues = core.check_result(args.check, args.case_json)
+        if issues:
+            for i in issues:
+                print("check: %s" % i)
+        print("check: %s" % ("PASS" if ok else "FAIL"))
+        return 0 if ok else 1
+
+    if args.update:
+        ok, msg = core.apply_patch(args.result, args.update)
+        print("update: %s" % msg)
+        return 0 if ok else 2
+
+    if args.skeleton_only:
+        path = core.run_skeleton(args.case_json, args.task_path, args.output_dir, args.work_dir)
+        print("skeleton: %s" % path)
         return 0
 
-    command = argv[0]
-    if command not in ("run", "skeleton", "check"):
-        _help()
-        return 1
-
-    # Thin dispatch: hand the real work to core_impl, which lives beside this
-    # file and is located by absolute path so invocation never depends on the
-    # caller's current working directory.
-    target = os.path.join(HERE, "core_impl.py")
-    sys.argv[0] = target
-    ns = runpy.run_path(target, run_name="__main__")
-    entry = ns.get("cli_main")
-    if entry is None:
-        print("core_impl.py did not define cli_main()", file=sys.stderr)
-        return 1
-    return entry(command, argv[1:])
+    path = core.run_pipeline(
+        args.case_json,
+        args.task_path,
+        args.input_root,
+        args.output_dir,
+        args.work_dir,
+        hash_limit=args.hash_limit,
+    )
+    print("finalize: %s" % path)
+    return 0
 
 
 if __name__ == "__main__":

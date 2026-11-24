@@ -1,10 +1,12 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""main.py - thin entry wrapper for the deterministic library repair engine.
+"""main.py — thin entry wrapper for the document-library repair Skill.
 
-All implementation lives in core_impl.py so this file stays small and stable.
+All real logic lives in core_impl.py so that this file stays small and
+reviewable. Invocation paths are relative to the Skill package root:
+
+    python3 -B scripts/main.py [options]
+
+Options mirror core_impl; run `--help` for the full list.
 """
-
 import os
 import runpy
 import sys
@@ -12,12 +14,15 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _help():
-    print("usage: main.py [--input-root DIR] [--output-dir DIR] [--work-dir DIR]")
-    print("                 [--skeleton-only] [--update patch.json --result result.json]")
-    print("                 [--check result.json --case-json case.json] [--help]")
-    print("")
-    print("defaults: --input-root /input --output-dir /app/output --work-dir /app/work")
+def _help() -> None:
+    print(
+        "usage: python3 -B scripts/main.py [--input DIR] [--output DIR] [--work DIR]\n"
+        "       [--case-json FILE] [--task-path FILE] [--result FILE]\n"
+        "       [--skeleton-only] [--update PATCH.json] [--check RESULT.json]\n"
+        "\n"
+        "Deterministic document-library repair pipeline (stdlib only).\n"
+        "Defaults: --input /input --output /app/output --work /app/work.\n"
+    )
 
 
 if __name__ == "__main__":
@@ -25,5 +30,5 @@ if __name__ == "__main__":
         _help()
         raise SystemExit(0)
     target = os.path.join(HERE, "core_impl.py")
-    namespace = runpy.run_path(target, run_name="__not_main__")
-    raise SystemExit(namespace["main"](sys.argv[1:]))
+    sys.argv[0] = target
+    runpy.run_path(target, run_name="__main__")

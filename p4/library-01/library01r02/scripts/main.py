@@ -1,7 +1,14 @@
-"""main.py - thin entry wrapper (implementation lives in core_impl.py).
+"""main.py - thin entry wrapper.
 
-Run with the interpreter the platform provides (python3 on the harness box,
-``python`` on this Windows dev box); the wrapper does not touch sys.executable.
+Run the deterministic library-repair pipeline implemented in core_impl.py.
+Usage:
+    python3 -B scripts/main.py --input-dir /input --output-dir /app/output \\
+        --work-dir /app/work
+    python3 -B scripts/main.py --skeleton-only ...
+    python3 -B scripts/main.py --update patch.json --result /app/output/result.json
+    python3 -B scripts/main.py --check --result /app/output/result.json \\
+        --case-json /input/case.json
+    python3 -B scripts/main.py --selftest
 """
 import os
 import runpy
@@ -11,15 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _help():
-    print(
-        "usage: main.py [--input DIR] [--output DIR] [--work DIR]\n"
-        "                [--case-json FILE] [--task-path FILE]\n"
-        "                [--skeleton-only] [--update PATCH.json --result RESULT.json]\n"
-        "                [--check RESULT.json [--case-json FILE]] [--help]\n"
-        "\n"
-        "defaults: --input /input  --output /app/output  --work /app/work\n"
-        "          --case-json /input/case.json  --task-path /input/task.md\n"
-    )
+    print(__doc__)
 
 
 if __name__ == "__main__":

@@ -1,150 +1,136 @@
-# -*- coding: utf-8 -*-
-"""selftest.py - deterministic self-test for the document library skill.
+"""selftest.py - build a disposable case, run the pipeline, assert contracts.
 
-Creates a throwaway input tree under the system temp dir, runs the CLI in
-skeleton / full / check modes, and asserts the reliability contract. Standard
-library only; no network, no third-party deps, no prepared answers.
+Pure stdlib, cross-platform. On Linux/macOS it additionally exercises symlink
+and hard-link handling; on Windows those cases are skipped because creating
+them normally requires extra privileges.
 """
+import hashlib
 import json
 import os
+import platform
 import shutil
-import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-MAIN = os.path.join(HERE, "main.py")
-
-
-def run(args):
-    return subprocess.run(
-        [sys.executable, "-B", MAIN] + args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+HERE = Path(__file__).resolve().parent
+CORE = HERE / "core_impl.py"
 
 
-def write(path, text=None, raw=None):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if raw is not None:
-        with open(path, "wb") as fh:
-            fh.write(raw)
-    else:
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(text or "")
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def make_case(tmp):
-    inp = os.path.join(tmp, "input")
-    out = os.path.join(tmp, "output")
-    work = os.path.join(tmp, "work")
-    os.makedirs(inp, exist_ok=True)
-    os.makedirs(os.path.join(inp, "materials"), exist_ok=True)
-    os.makedirs(os.path.join(inp, "empty_dir"), exist_ok=True)
-
-    write(os.path.join(inp, "case.json"), json.dumps({
-        "case_id": "selftest-001",
-        "output_contract": {
-            "file_manifest": "library_manifest.csv",
-            "dedup": "dedup_version.json",
-            "tree": "directory_tree.txt",
-        },
-    }))
-    write(os.path.join(inp, "task.md"),
-          "# 测试任务\nchallenge_id: `selftest-001`\n")
-    write(os.path.join(inp, "materials", "analysis_v1.txt"), "alpha\n")
-    write(os.path.join(inp, "materials", "analysis_v2.txt"), "alpha beta\n")
-    write(os.path.join(inp, "materials", "data.csv"), "a,b\n1,2\n")
-    write(os.path.join(inp, "materials", "copy_of_data.csv"), "a,b\n1,2\n")
-    write(os.path.join(inp, "materials", "catalog.json"), json.dumps([
-        {"path": "materials/data.csv", "sha256":
-            "5f5d1e0c1b2a3f6d7e8f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2"},
-        {"path": "materials/missing.csv", "size": 10},
-    ]))
-    write(os.path.join(inp, "materials", "bad.json"), "{not valid json")
-    write(os.path.join(inp, "materials", "notes_VERSION.txt"),
-          "v1 -> v2\nv2 -> v3 修复\n")
-    # large sparse file (exceeds 2MB hash cap) without real disk allocation
-    large = os.path.join(inp, "materials", "large.bin")
-    with open(large, "wb") as fh:
-        fh.seek(2 * 1024 * 1024 + 16)
-        fh.write(b"x")
-    # broken symlink (best effort; may need privileges on Windows)
+def main() -> int:
+    tmp = Path(tempfile.mkdtemp(prefix="libskill_selftest_"))
+    inp = tmp / "input"
+    out = tmp / "output"
+    work = tmp / "work"
     try:
-        os.symlink("no_such_target.txt",
-                   os.path.join(inp, "materials", "broken_link.txt"))
-    except (OSError, NotImplementedError):
-        pass
-    return inp, out, work
+        (inp / "materials").mkdir(parents=True)
+        (inp / "materials" / "empty_dir").mkdir()
 
+        contract = {
+            "library": {"count": 3},
+            "owner": "selftest",
+            "required_artifacts": ["manifest", "index"],
+        }
+        (inp / "case.json").write_text(json.dumps({
+            "case_id": "self-test-001",
+            "output_contract": contract,
+        }, ensure_ascii=False), encoding="utf-8")
+        (inp / "task.md").write_text(
+            "# task\n判断本课题是否做对，不看移动了多少文件，而是版本是否按内容判断。\n"
+            "请统计有多少个文件、重复、版本、断链。\n",
+            encoding="utf-8",
+        )
 
-def assert_ok(rc, name):
-    if rc != 0:
-        raise SystemExit("selftest FAILED at %s (rc=%d)" % (name, rc))
+        same = "same content bytes"
+        (inp / "materials" / "report_v1.txt").write_text(
+            same, encoding="utf-8")
+        (inp / "materials" / "report_v2.txt").write_text(
+            same, encoding="utf-8")
+        (inp / "materials" / "data.csv").write_text(
+            "name,value\na,1\n", encoding="utf-8")
+        (inp / "materials" / "bad.json").write_text("{bad json", encoding="utf-8")
+        (inp / "materials" / "library.json").write_text(json.dumps({
+            "files": [
+                {"path": "materials/report_v1.txt",
+                 "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+            ],
+        }, ensure_ascii=False), encoding="utf-8")
 
+        if platform.system() != "Windows":
+            try:
+                os.symlink("no-such-target",
+                           inp / "materials" / "broken_link")
+            except OSError:
+                pass
 
-def check_result(out):
-    path = os.path.join(out, "result.json")
-    if not os.path.exists(path):
-        raise SystemExit("selftest FAILED: result.json missing")
-    with open(path, "r", encoding="utf-8") as fh:
-        result = json.load(fh)
-    for req in ("case_id", "status", "sources", "uncertainty", "change_log",
-                "computed"):
-        assert req in result, "missing %s" % req
-    assert result["case_id"], "case_id empty"
-    assert result["status"] in ("ok", "partial", "insufficient_evidence",
-                                "input_error"), "bad status"
-    for key in ("file_manifest", "dedup", "tree"):
-        assert key in result, "contract field missing %s" % key
-    for artifact in ("library_manifest.csv", "directory_tree.txt",
-                     "dedup_version.json", "recovery_report.json",
-                     "library_index.json", "library_manifest.md",
-                     "operation_log.jsonl"):
-        assert os.path.exists(os.path.join(out, artifact)), \
-            "artifact missing %s" % artifact
-    return result
+        # Reuse the pipeline directly (no subprocess), so the check stays fast.
+        sys.path.insert(0, str(HERE))
+        import core_impl as c
 
+        cfg = c.SimpleNamespace(
+            input_dir=inp, output_dir=out, work_dir=work,
+            case_json=inp / "case.json", task_path=inp / "task.md",
+            max_hash_bytes=c.DEFAULT_MAX_HASH_BYTES, time_budget=900,
+            request_budget=64, skeleton_only=False,
+        )
+        result = c.finalize(cfg)
+        summary = result["computed"]["summary"]
 
-def main():
-    tmp = tempfile.mkdtemp(prefix="library_skill_selftest_")
-    try:
-        inp, out, work = make_case(tmp)
-        base = ["--input", inp, "--output", out, "--work", work,
-                "--case-json", os.path.join(inp, "case.json"),
-                "--task-path", os.path.join(inp, "task.md")]
+        checks = [
+            ("case_id", result.get("case_id") == "self-test-001"),
+            ("status", result.get("status") in ("ok", "partial")),
+            ("contract.library.count",
+             result.get("library", {}).get("count") == 3),
+            ("contract.owner", result.get("owner") == "selftest"),
+            ("contract.required_artifacts",
+             result.get("required_artifacts") == ["manifest", "index"]),
+            ("duplicate_groups", summary.get("duplicate_groups") == 1),
+            ("version_candidates",
+             summary.get("version_candidates", 0) >= 1),
+            ("hashed_files", summary.get("hashed", 0) >= 3),
+            ("bad_json_recorded", any(
+                e.get("code") == "json_parse_error" for e in result["errors"])),
+            ("reconcile_mismatch",
+             summary.get("reconcile_mismatches", 0) >= 1),
+            ("manifest_rows",
+             len(result["computed"]["inventory"]) == summary["files"]),
+        ]
 
-        rc = run(["--skeleton-only"] + base).returncode
-        assert_ok(rc, "skeleton")
-        rc = run(base).returncode
-        assert_ok(rc, "full")
-        result = check_result(out)
-        rc = run(["--check", os.path.join(out, "result.json"),
-                  "--case-json", os.path.join(inp, "case.json")]).returncode
-        assert_ok(rc, "check")
+        for name in ("result.json", "library_manifest.csv",
+                     "directory_tree.txt", "dedup_version.json",
+                     "recovery_report.json", "library_index.json",
+                     "library_manifest.md", "operation_log.jsonl"):
+            checks.append((f"artifact:{name}", (out / name).exists()))
+        checks.append(("operation_log", (work / "operation_log.jsonl").exists()))
 
-        # empty input -> insufficient_evidence, exit 0
-        empty = os.path.join(tmp, "empty")
-        os.makedirs(empty)
-        rc = run(["--skeleton-only", "--input", empty,
-                  "--output", os.path.join(tmp, "out_empty"),
-                  "--work", os.path.join(tmp, "work_empty"),
-                  "--case-json", os.path.join(empty, "case.json"),
-                  "--task-path", os.path.join(empty, "task.md")]).returncode
-        assert_ok(rc, "empty-skeleton")
+        # Determinism: a second run on the same tree yields the same summary.
+        result2 = c.finalize(cfg)
+        same_summary = result2["computed"]["summary"] == summary
+        checks.append(("deterministic_summary", same_summary))
 
-        # missing case.json -> input_error
-        rc = run(["--skeleton-only", "--input", empty,
-                  "--output", os.path.join(tmp, "out_nocase"),
-                  "--work", os.path.join(tmp, "work_nocase")]).returncode
-        assert_ok(rc, "no-case-skeleton")
+        # --check on the produced result must pass.
+        check_rc = c.run_check(out / "result.json", inp / "case.json")
+        checks.append(("run_check", check_rc == 0))
 
-        print("selftest OK: status=%s files=%d dup=%d version=%d"
-              % (result["status"],
-                 result["computed"]["summary"]["counts"]["files"],
-                 len(result["computed"]["duplicate_groups"]),
-                 len(result["computed"]["version_candidates"])))
+        # --skeleton-only writes a valid partial result.
+        skel_out = tmp / "skeleton"
+        skel_rc = c.main(["--input-dir", str(inp), "--output-dir", str(skel_out),
+                          "--work-dir", str(tmp / "skwork"),
+                          "--skeleton-only"])
+        skel = c.load_json_lenient(skel_out / "result.json")[0]
+        checks.append(("skeleton_rc", skel_rc == 0))
+        checks.append(("skeleton_status",
+                       skel.get("status") == "partial" and skel.get("case_id")))
+
+        failed = [name for name, ok in checks if not ok]
+        if failed:
+            print("selftest: FAIL -> " + ", ".join(failed))
+            return 1
+        print("selftest: OK (" + str(len(checks)) + " checks)")
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

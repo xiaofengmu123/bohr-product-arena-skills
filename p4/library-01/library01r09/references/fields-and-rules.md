@@ -1,44 +1,63 @@
-# 字段与规则说明（fields-and-rules）
+# 字段字典与判定规则（脚本确定层）
 
-本文件说明 `library_manifest.csv`、`dedup_version.json`、`recovery_report.json`、`library_index.json` 的字段与判定规则，供他人按记录复跑与核对。
+本文档规定 `finalize.py` 的确定性判定口径；语义层（字段映射、版本链确认、检索答案）由
+Agent 在 `result.json` 的 `sources`/`uncertainty` 中补充，不得由脚本猜测。
 
-## 1. 清单字段（library_manifest.csv，每行一个源文件）
+## 1. 文件清单字段（library_manifest.csv / computed.files）
 
-| 字段 | 含义 |
-|---|---|
-| `relpath` | 相对 /input 的 POSIX 路径（`/` 分隔） |
-| `type` | `regular` / `dir` / `symlink` / `special` |
-| `role` | `material`（科研材料）或 `task_input`（case.json / task.md） |
-| `size` | 字节数；目录/符号链接为 null |
-| `mtime` | 修改时间（ISO 8601 UTC） |
-| `mode` | 权限八进制（如 `0o644`） |
-| `uid` / `gid` / `inode` / `nlink` | 系统元数据（Windows 上可能为 null） |
-| `symlink_target` / `broken` | 符号链接目标与是否断链 |
-| `sha256` | 内容 SHA-256（十六进制小写） |
-| `hash_status` | `ok` / `empty` / `too_large` / `unreadable*` / `symlink` / `non_regular` |
-| `encoding` | 文本预览所用编码（`utf-8` / `gbk` / `latin-1` / `empty` 等） |
-| `catalog_kind` | 由扩展名识别的库目录类型（json/csv/bibtex/ris/sqlite） |
+| 字段 | 含义 | 缺失/降级 |
+|---|---|---|
+| path | 相对 /input 的 POSIX 路径 | 始终存在 |
+| name | 文件名（含扩展名） | 始终存在 |
+| type | file / dir / symlink / other / unreadable | 无法 stat 时为 unreadable |
+| size | 字节数 | symlink 为链接体大小，可缺失 |
+| mtime | 修改时间（epoch 秒） | 无法 stat 时缺失 |
+| mode | 权限（Linux 八进制 / Windows rw·ro） | 无法 stat 时缺失 |
+| sha256 | 内容哈希 | 超 16MB 记 note=too_large；不可读记 hash_error |
+| inode/nlink | 硬链接判定用 | 文件系统不支持时为 0，跳过硬链接分组 |
+| link_target/resolved/broken | 符号链接目标/解析/断链 | 仅 symlink 出现 |
+| text_encoding/preview | 文本类文件的编码与首 400 字符 | 非文本类型不产生 |
 
-## 2. 判定规则
+## 2. 去重规则
 
-- **去重**：仅按内容 SHA-256 分组，`dedup_version.json > duplicate_groups` 列出 >1 文件的组。同名不同内容不算重复。
-- **版本候选**：文件名去掉日期、版本后缀（`v1`/`v2`/`final`/`draft`/`副本`/`备份`/`(...)` 等）得到归一化主干；同主干 ≥2 个文件按 mtime 升序成链，相邻对给 `identical`/`size_delta`/`similarity`（difflib）或 `binary_or_unreadable`。**全部标 `heuristic`，供 Agent 语义复核**。
-- **别名**：符号链接（含断链）逐条记录；硬链接组按 `(st_dev, st_ino)` 且 `nlink>1` 分组。
-- **对账**：库目录记录中的 `file`/`path`/`filename` 等键映射到磁盘 `relpath`（先精确、再相对、再唯一 basename），产出 `matches` / `mismatches`（目录哈希与实际 SHA-256 不一致）/ `missing`（目录有、磁盘无）/ `orphaned`（磁盘有、任何目录均未引用）。
-- **索引**：文件名、目录名、库目录字段值分词后建倒排索引（token → relpath），并抽取 author/year/title/doi/type 字段。
+- 依据：`sha256` 完全一致（内容级，与文件名无关）。
+- 同一哈希 ≥2 个文件记入 `duplicate_groups`，按组大小降序。
+- 无哈希（too_large/unreadable）不参与去重，也不静默删除，仅记录 note。
 
-## 3. 库目录解析
+## 3. 版本候选规则（启发式，需 Agent 复核）
 
-- **JSON**：顶层 list 逐项；顶层 dict 的每个 list/dict 值作为一组记录。
-- **CSV**：`csv.DictReader`，跳过全空行。
-- **BibTeX**：正则按 `@type{key, field={...}}` 解析。
-- **RIS**：按 `TY/ER` 分段，`AU/TI/PY/DO/JO/VL/IS/SP` 映射到 author/title/year/doi/journal/volume/issue/pages。
-- **SQLite**：只读连接，遍历全部表与全部行，字段值二进制转 UTF-8；打开失败记 `sqlite_open_error`，单表查询失败记 `sqlite_query_error`，不中断。
+1. 归一化主干 `norm_stem`：小写；剔除 `v1/v2/rev/final/draft/copy/bak/old/(n)/[n]` 与
+   `YYYY-MM-DD` 等版本标记；非字母数字与中文折叠为 `_`。
+2. 同主干 ≥2 个文件 → 版本候选链，按 mtime 升序排列。
+3. 相邻差异给出 `size_delta` 与 `hash_changed`，`heuristic=true` 明确标注。
 
-## 4. 证据溯源
+## 4. 别名识别
 
-每个关键结论在 `result.json > sources` 有 `item + locator + quote`：`locator` 为文件相对路径或 `.`（汇总），`quote` 为逐字原文或确定性计算结果；目录哈希与实际哈希冲突时两条都保留并标 `mismatch`。缺失/无法判断写入 `pending_human` 或 `not_reported`，禁止编造。
+- 符号链接：`os.path.islink` + `readlink`，断链按 `os.path.exists` 判定。
+- 硬链接：按 `(st_dev, st_ino)` 分组，组内 ≥2 个文件记入 `aliases.hardlinks`。
+- 不支持 inode 的平台自动跳过，不报错。
 
-## 5. 复跑核对
+## 5. 行政版本说明解析
 
-同输入重复运行：遍历按名称排序、哈希稳定、JSON 键序固定、无随机数，因此除 `runtime`/`change_log` 时间戳外结果一致；可直接 `diff` 两次 `result.json` 的 `computed` 部分核对。
+- 扫描名字含 `version/版本/changelog/note/说明/历史/change/release` 的文本文件，
+  逐行匹配含 `version/版本/修订/release/changelog/history/变更` 的行。
+- 每行记录 `source` + `locator`（`path#L行号`）+ 逐字 `quote`。
+- task.md 中含“版本说明/行政版本”的行同步记录，来源标 `task.md`。
+
+## 6. 库目录解析与恢复对账
+
+- 支持 JSON（list 或单层嵌套 list）、CSV、BibTeX、RIS、SQLite。
+- 条目键优先级：path/file/file_path/filename/name/key/id/DOI。
+- 对账口径：`matches`=目录条目键与磁盘路径/文件名重合；`missing`=目录有而磁盘无；
+  `orphaned`=磁盘有而目录未引用；`mismatches` 需白板哈希/大小，无白板时保持空。
+- SQLite 打不开/坏表记录 `sqlite_open_error`/`sqlite_query_error`，不崩溃。
+
+## 7. 检索索引
+
+- 关键词 = 文件名分词 token、`ext:<扩展名>`、类型、库目录 author/year/title/journal 分词。
+- 值为该关键词命中的文件路径（有序去重）。
+
+## 8. 机械问答（computed.answers）
+
+自动给出：文件总数、目录/空目录数、重复组数、断链符号链接数、硬链接组数、
+版本候选链数、对账 matches/missing/orphaned 数、库目录源数；每题带 `evidence` 定位。

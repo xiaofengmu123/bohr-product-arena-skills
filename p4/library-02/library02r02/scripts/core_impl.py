@@ -1,16 +1,12 @@
-"""core_impl.py - document library repair: deterministic inventory, dedup,
-version candidates, aliases, catalog reconciliation, index, answers, and a
-resumable result/checkpoint pipeline.  Standard library only.
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""core_impl.py — 科研资料库修复引擎（仅 Python 标准库，确定性、可复跑）。
 
-Design principles (variant: time budget + early skeleton):
-  * The first write is always a legal partial result (skeleton).  Every later
-    step improves it incrementally; a crash therefore never leaves an empty or
-    invalid /app/output/result.json.
-  * All traversal is sorted, hashing is content-based, and there is no source
-    of randomness, so repeat runs agree except for the runtime timestamps.
-  * The script layer does mechanical work (walk, hash, dedup, version,
-    alias, catalog, index, mechanical answers).  Semantic judgement and
-    evidence quotes are left to the Agent, which merges them with --update.
+机械确定性层职责：
+  盘点 → 内容哈希 → 去重 → 版本候选 → 别名(符号/硬链接) → 行政版本说明解析
+  → 库目录解析 → 恢复对账 → 检索索引 → 机械问答 → 产物落盘。
+语义层（跨文件语义检索/章节定位/证据回链）由调用 Agent 在 result.sources 与
+result.answers 上增量补充；本引擎保证索引、候选与证据定位可复核。
 """
 
 import argparse
@@ -22,1171 +18,1371 @@ import json
 import os
 import re
 import sqlite3
-import stat as statmod
+import stat
+import subprocess
 import sys
 import time
 
-try:  # prefer UTF-8 stdio; fall back silently on old interpreters
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-except Exception:
-    pass
+VERSION = "1.0.0"
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+MAX_TEXT_READ = 2_000_000       # 文本类文件读入上限（字节）
+MAX_HASH_BYTES = 64_000_000     # 内容哈希上限（字节），超出记录 too_large
+MAX_PDF_BYTES = 24_000_000      # 可选 pdftotext 提取上限（字节）
+PDF_TIMEOUT = 30                # pdftotext 单文件超时（秒）
+INDEX_PREVIEW = 2000            # 索引中每文件文本预览上限（字符）
 
-ALLOWED_STATUS = ("ok", "partial", "insufficient_evidence", "input_error")
-CONTRACT_KEYS = ("output_contract", "output", "result_schema", "contract", "output_schema")
-RESERVED_KEYS = {
-    "case_id", "status", "task_id", "task_title", "output_contract",
-    "sources", "uncertainty", "change_log", "errors", "degradations",
-    "limitations", "pending_human", "runtime", "computed", "artifacts",
+STATUSES = ("ok", "partial", "insufficient_evidence", "input_error")
+
+TEXT_SUFFIXES = {
+    ".txt", ".md", ".markdown", ".rst", ".csv", ".tsv", ".json", ".jsonl",
+    ".xml", ".html", ".htm", ".yaml", ".yml", ".bib", ".ris", ".log", ".tex",
+    ".ini", ".cfg", ".toml", ".py", ".sh", ".r", ".rmd", ".ipynb",
 }
-DEFAULT_MAX_HASH_BYTES = 2 * 1024 * 1024
-PREVIEW_CHARS = 2000
-INDEX_TEXT_CHARS = 20000
-BINARY_EXTENSIONS = {
-    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
-    "zip", "gz", "bz2", "xz", "7z", "rar", "tar", "png", "jpg", "jpeg", "gif",
-    "tif", "tiff", "bmp", "webp", "svgz", "mp3", "mp4", "wav", "avi", "mov",
-    "db", "sqlite", "sqlite3", "pickle", "pkl", "npy", "npz", "h5", "hdf5",
-    "mat", "sav", "dta", "exe", "dll", "so", "dylib",
+
+CONTRACT_KEYS = ("output_contract", "output", "result_schema", "contract",
+                 "expected_output", "expected_result")
+
+VERSION_TOKEN = re.compile(
+    r"(?i)(v|ver|version|rev|r)?\s*\d+(\.\d+){0,3}"
+    r"(final|draft|submitted|accepted|published|old|new|copy|副本|修订|终稿|投稿|扫描|scan)?"
+)
+
+NORM_NOISE = re.compile(
+    r"(?i)(final|draft|submitted|accepted|published|old|new|copy|副本|修订|终稿|投稿|扫描|scan|"
+    r"v\d[\d.]*|ver\d[\d.]*|rev\d[\d.]*|r\d[\d.]*)"
+)
+
+CJK = re.compile(r"[\u4e00-\u9fff]")
+WORD = re.compile(r"[a-z0-9_]{2,}")
+YEAR = re.compile(r"(19|20)\d{2}")
+EXT_IN_Q = re.compile(r"\.(pdf|docx?|xlsx?|pptx?|txt|md|csv|tsv|bib|ris|json|db|sqlite)", re.I)
+VER_IN_Q = re.compile(r"(?i)v\d[\d.]*|版本[:：]?\s*([A-Za-z0-9.\-_]+)")
+PROJ_IN_Q = re.compile(r"(?:项目(?:编号)?|project)[:：]?\s*([A-Za-z0-9\-_]+)")
+
+RESERVED = {
+    "case_id", "status", "result", "sources", "uncertainty", "pending_human",
+    "errors", "degradations", "limitations", "runtime", "change_log",
+    "artifacts", "computed", "contract", "contract_key",
 }
-INPUT_ROLE_BASENAMES = {"case.json", "task.md"}
-CATALOG_PATH_KEYS = ("path", "file", "filename", "filepath", "relpath", "relative_path", "name")
-
-PLAN_PHASES = [
-    {"id": "0_skeleton", "name": "骨架早落盘", "budget_s": 180, "request_budget": 6,
-     "goal": "run --skeleton-only; write legal partial result.json; read task.md rules"},
-    {"id": "1_mechanical", "name": "盘点与机械产物", "budget_s": 120, "request_budget": 0,
-     "goal": "run full pipeline once; inventory/hash/dedup/version/alias/catalog/index/answers"},
-    {"id": "2_semantic", "name": "语义归位与增量", "budget_s": 360, "request_budget": 40,
-     "goal": "inspect materials; fix org/dedup/version/metadata/answers via --update patches"},
-    {"id": "3_evidence", "name": "证据与复核", "budget_s": 120, "request_budget": 12,
-     "goal": "add sources/uncertainty; run --check; resolve conflicts"},
-    {"id": "4_finalize", "name": "定稿", "budget_s": 120, "request_budget": 6,
-     "goal": "set honest status; confirm contract fields; final --check"},
-]
-TOTAL_BUDGET_S = 900
-TOTAL_REQUEST_BUDGET = 64
 
 
-# ---------------------------------------------------------------------------
-# Small helpers
-# ---------------------------------------------------------------------------
-
-def now_utc():
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time()))
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def ensure_dir(path):
-    if path:
-        os.makedirs(path, exist_ok=True)
+def log_change(change_log, actor, step, detail):
+    change_log.append({
+        "time": now_iso(), "actor": actor, "step": step, "detail": detail,
+    })
 
 
-def read_text_file(path, max_bytes=None):
-    """Read text with BOM tolerance and encoding fallback. Returns (text, encoding, ok)."""
-    with open(path, "rb") as fh:
-        data = fh.read() if max_bytes is None else fh.read(max_bytes)
-    return decode_bytes(data)
+def norm_sep(path):
+    return path.replace("\\", "/")
 
 
-def decode_bytes(data):
-    for enc in ("utf-8-sig", "utf-8"):
+# --------------------------------------------------------------------------- #
+# 命令行解析
+# --------------------------------------------------------------------------- #
+def parse_args(argv):
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--input", default="/input")
+    p.add_argument("--output", default="/app/output")
+    p.add_argument("--work", default="/app/work")
+    p.add_argument("--case-json", default=None)
+    p.add_argument("--task-path", default=None)
+    p.add_argument("--skeleton-only", action="store_true")
+    p.add_argument("--update", default=None)
+    p.add_argument("--result", default=None)
+    p.add_argument("--check", default=None)
+    p.add_argument("--help", action="store_true")
+    return p.parse_args(argv)
+
+
+# --------------------------------------------------------------------------- #
+# 读取工具（容错编码、坏 JSON 不崩溃）
+# --------------------------------------------------------------------------- #
+def read_bytes(path, limit=None):
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+    if limit is not None and size > limit:
+        return None, "too_large", None
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        return raw, "ok", None
+    except OSError as e:
+        return None, "unreadable", str(e)
+
+
+def decode_text(raw):
+    for enc in ("utf-8-sig", "utf-8", "gb18030", "latin-1"):
         try:
-            return data.decode(enc), enc, True
-        except UnicodeDecodeError:
+            return raw.decode(enc), "ok", enc
+        except (UnicodeDecodeError, LookupError):
             continue
-    if b"\x00" in data[:8192]:
-        return None, "binary", False
+    return raw.decode("latin-1", errors="replace"), "degraded", "latin-1"
+
+
+def read_text_file(path, limit=MAX_TEXT_READ):
+    raw, state, err = read_bytes(path, limit)
+    if raw is None:
+        return None, state, None, err
+    text, dstate, enc = decode_text(raw)
+    if dstate == "degraded":
+        return text, "degraded", enc, "lossy decode"
+    return text, "ok", enc, None
+
+
+def read_json_file(path):
+    raw, state, err = read_bytes(path, MAX_TEXT_READ)
+    if raw is None:
+        return None, state, err
     try:
-        return data.decode("latin-1"), "latin-1", False
-    except Exception:
-        return None, "binary", False
+        return json.loads(raw.decode("utf-8-sig")), "ok", None
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        # 容错：尝试逐行/宽松解析失败即报错
+        return None, "bad_json", str(e)
 
 
-def read_json(path, default=None):
-    try:
-        with open(path, "r", encoding="utf-8-sig") as fh:
-            return json.load(fh)
-    except Exception:
-        return default
-
-
-def write_json(path, obj):
-    ensure_dir(os.path.dirname(os.path.abspath(path)))
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(obj, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
-
-
-def append_jsonl(path, obj):
-    ensure_dir(os.path.dirname(os.path.abspath(path)))
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
-
-
-def relpath_slash(path, root):
-    rel = os.path.relpath(path, root)
-    return rel.replace(os.sep, "/")
-
-
-def sha256_bytes(data):
-    return hashlib.sha256(data).hexdigest()
-
-
-def load_patch(path):
-    if path is None or not os.path.exists(path):
-        return {}
-    return read_json(path, {})
-
-
-# ---------------------------------------------------------------------------
-# Input contract discovery
-# ---------------------------------------------------------------------------
-
-def discover_case_id(case, task_text):
-    if isinstance(case, dict):
-        for k in ("case_id", "id", "challenge_id", "challengeId", "armiId", "task_id"):
-            v = case.get(k)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-    if task_text:
-        m = re.search(r"challenge[-_]?id[:：]\s*`?([A-Za-z0-9._-]+)`?", task_text)
-        if m:
-            return m.group(1)
-        m = re.search(r"challenge[-_]?id[:：]\s*([A-Za-z0-9._-]+)", task_text)
-        if m:
-            return m.group(1)
-    return "unknown"
-
-
-def discover_contract(case):
-    """Return (key, contract_dict_or_None)."""
-    if isinstance(case, dict):
-        for k in CONTRACT_KEYS:
-            if k in case:
-                v = case[k]
-                if isinstance(v, dict):
-                    return k, v
-                return k, {"_raw": v}
-    return None, None
-
-
-def default_contract():
-    return {
-        "library_summary": None,
-        "file_manifest": [],
-        "directory_tree": None,
-        "metadata": [],
-        "version_relations": [],
-        "reconciliation": None,
-        "index": None,
-        "answers": [],
-        "hashes": [],
-        "permissions": [],
-        "changes": [],
-        "skipped": [],
-        "conflicts": [],
-        "recovery": [],
-    }
-
-
-def task_title(case, task_text):
-    if isinstance(case, dict):
-        for k in ("title", "name"):
-            v = case.get(k)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-    if task_text:
-        for line in task_text.splitlines():
-            s = line.strip()
-            if s.startswith("#") and not s.startswith("##"):
-                return s.lstrip("#").strip()
+def find_file(root, name, fallback=None):
+    if fallback and os.path.exists(fallback):
+        return fallback
+    direct = os.path.join(root, name)
+    if os.path.exists(direct):
+        return direct
+    # 浅层扫描两层
+    for depth in (1, 2):
+        for dirpath, dirnames, filenames in os.walk(root):
+            if name in filenames:
+                return os.path.join(dirpath, name)
+            rel = os.path.relpath(dirpath, root)
+            if rel.count(os.sep) >= depth:
+                dirnames[:] = []
     return None
 
 
-# ---------------------------------------------------------------------------
-# Result skeleton
-# ---------------------------------------------------------------------------
-
-def build_skeleton(case_id, status, contract, title, task_id=None):
-    result = {
-        "case_id": case_id,
-        "status": status,
-        "task_id": task_id or case_id,
-        "task_title": title,
-        "output_contract": contract if isinstance(contract, dict) else None,
-        "sources": [],
-        "uncertainty": [],
-        "change_log": [
-            {"time": now_utc(), "actor": "script", "step": "skeleton",
-             "detail": "legal partial result written before analysis"}
-        ],
-        "errors": [],
-        "degradations": [],
-        "limitations": [],
-        "pending_human": [],
-        "runtime": {"started_utc": now_utc(), "elapsed_s": 0.0, "tool": "python-stdlib"},
-        "computed": {},
-        "artifacts": {},
-    }
-    _fill_contract_placeholders(result, contract)
-    return result
+# --------------------------------------------------------------------------- #
+# 元数据
+# --------------------------------------------------------------------------- #
+def mode_string(mode):
+    def rwx(bits):
+        return ("r" if bits & 4 else "-") + ("w" if bits & 2 else "-") + ("x" if bits & 1 else "-")
+    t = "d" if stat.S_ISDIR(mode) else ("l" if stat.S_ISLNK(mode) else "-")
+    return t + rwx((mode >> 6) & 7) + rwx((mode >> 3) & 7) + rwx(mode & 7)
 
 
-def _fill_contract_placeholders(result, contract):
-    if not isinstance(contract, dict):
-        return
-    for k in contract.keys():
-        if k in RESERVED_KEYS:
-            result.setdefault("computed", {}).setdefault("_contract_" + k, None)
-            continue
-        result.setdefault(k, None)
-
-
-# ---------------------------------------------------------------------------
-# Inventory
-# ---------------------------------------------------------------------------
-
-def _file_role(rel):
-    base = os.path.basename(rel)
-    return "input_contract" if base in INPUT_ROLE_BASENAMES else "material"
-
-
-def inventory(input_root, max_hash_bytes=DEFAULT_MAX_HASH_BYTES):
-    files, dirs, symlinks, errors, degradations = [], [], [], [], []
-    hardlink_map = {}
-    if not os.path.isdir(input_root):
-        errors.append({"path": "<input-root>", "kind": "input_root_missing",
-                       "detail": "input root does not exist or is not a directory"})
-        return _inventory_result(files, dirs, [], [], errors, degradations, [])
-
-    for dirpath, dirnames, filenames in os.walk(input_root, topdown=True):
-        dirnames.sort()
-        filenames.sort()
-        rel_dir = relpath_slash(dirpath, input_root)
-        dirs.append({"path": rel_dir, "role": "directory"})
-        for fn in filenames:
-            abs_path = os.path.join(dirpath, fn)
-            rel = relpath_slash(abs_path, input_root)
-            try:
-                st = os.lstat(abs_path)
-            except OSError as exc:
-                errors.append({"path": rel, "kind": "lstat_error", "detail": str(exc)})
-                continue
-            entry = {
-                "path": rel, "role": _file_role(rel), "size": st.st_size,
-                "mtime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)),
-                "mode": oct(st.st_mode & 0o7777), "nlink": st.st_nlink,
-            }
-            if statmod.S_ISLNK(st.st_mode):
-                entry["type"] = "symlink"
-                try:
-                    target = os.readlink(abs_path)
-                except OSError as exc:
-                    target = None
-                    errors.append({"path": rel, "kind": "readlink_error", "detail": str(exc)})
-                entry["link_target"] = target
-                if target is not None:
-                    target_abs = os.path.normpath(os.path.join(dirpath, target))
-                    entry["broken"] = not os.path.exists(target_abs)
-                symlinks.append(entry)
-                files.append(entry)
-                continue
-            if not statmod.S_ISREG(st.st_mode):
-                entry["type"] = "non_regular"
-                entry["mode_desc"] = _mode_desc(st.st_mode)
-                files.append(entry)
-                degradations.append({"path": rel, "kind": "non_regular",
-                                     "detail": _mode_desc(st.st_mode)})
-                continue
-            entry["type"] = "file"
-            entry["extension"] = (os.path.splitext(fn)[1].lstrip(".").lower() or None)
-            entry["readable"] = os.access(abs_path, os.R_OK)
-            if st.st_nlink > 1:
-                key = (st.st_dev, st.st_ino)
-                hardlink_map.setdefault(key, []).append(rel)
-                entry["inode"] = st.st_ino
-            if not entry["readable"]:
-                entry["hash"] = None
-                entry["hash_status"] = "unreadable"
-                files.append(entry)
-                degradations.append({"path": rel, "kind": "unreadable", "detail": "no read access"})
-                continue
-            if st.st_size > max_hash_bytes:
-                entry["hash"] = None
-                entry["hash_status"] = "too_large"
-                files.append(entry)
-                degradations.append({"path": rel, "kind": "too_large",
-                                     "detail": "size %d > max_hash %d" % (st.st_size, max_hash_bytes)})
-                continue
-            try:
-                with open(abs_path, "rb") as fh:
-                    data = fh.read()
-            except OSError as exc:
-                entry["hash"] = None
-                entry["hash_status"] = "read_error"
-                files.append(entry)
-                errors.append({"path": rel, "kind": "read_error", "detail": str(exc)})
-                continue
-            entry["sha256"] = sha256_bytes(data)
-            entry["hash_status"] = "ok"
-            text, encoding, strict_ok = decode_bytes(data)
-            entry["encoding"] = encoding
-            is_binary = entry["extension"] in BINARY_EXTENSIONS or (text is None)
-            entry["is_text"] = bool(not is_binary and text is not None)
-            if entry["is_text"]:
-                entry["preview"] = text[:PREVIEW_CHARS]
-                entry["full_text"] = text[:INDEX_TEXT_CHARS]
-                if not strict_ok:
-                    degradations.append({"path": rel, "kind": "encoding_fallback",
-                                         "detail": "decoded with %s" % encoding})
-            else:
-                entry["preview"] = None
-            files.append(entry)
-
-    empty_dirs = _empty_dirs(input_root, files)
-    hardlinks = [{"inode": key[1], "paths": sorted(paths)}
-                 for key, paths in sorted(hardlink_map.items(), key=lambda kv: kv[0][1])
-                 if len(paths) > 1]
-    return _inventory_result(files, dirs, empty_dirs, symlinks, errors, degradations, hardlinks)
-
-
-def _mode_desc(mode):
-    if statmod.S_ISDIR(mode):
-        return "directory"
-    if statmod.S_ISLNK(mode):
+def file_kind(path, is_link):
+    if is_link:
         return "symlink"
-    if statmod.S_ISREG(mode):
-        return "regular"
-    if statmod.S_ISFIFO(mode):
-        return "fifo"
-    if statmod.S_ISSOCK(mode):
-        return "socket"
-    if statmod.S_ISCHR(mode):
-        return "char_device"
-    if statmod.S_ISBLK(mode):
-        return "block_device"
+    if os.path.isdir(path):
+        return "dir"
+    if os.path.isfile(path):
+        return "file"
     return "other"
 
 
-def _empty_dirs(input_root, files):
-    """A directory is empty when no inventoried file lives beneath it."""
-    result = []
-    for dirpath, dirnames, filenames in os.walk(input_root, topdown=True):
+def is_text_like(name):
+    ext = os.path.splitext(name)[1].lower()
+    return ext in TEXT_SUFFIXES
+
+
+def looks_binary(text):
+    if not text:
+        return False
+    probe = text[:4096]
+    if "\x00" in probe:
+        return True
+    controls = sum(1 for ch in probe if ord(ch) < 9 or (13 < ord(ch) < 32))
+    return controls / max(1, len(probe)) > 0.02
+
+
+def extract_years(text, mtime_iso=None):
+    years = set()
+    if text:
+        for m in YEAR.finditer(text):
+            years.add(int(m.group(0)))
+    if mtime_iso:
+        m = re.match(r"(\d{4})", mtime_iso)
+        if m:
+            years.add(int(m.group(1)))
+    return sorted(years)
+
+
+# --------------------------------------------------------------------------- #
+# 盘点
+# --------------------------------------------------------------------------- #
+def inventory(root, errors, degradations):
+    root = os.path.abspath(root)
+    files = []
+    dirs = []
+    seen_inodes = {}
+
+    def lstat_rec(abs_path, rel, name):
+        try:
+            return os.lstat(abs_path)
+        except OSError as e:
+            errors.append({"type": "stat_error", "locator": rel, "detail": str(e)})
+            return None
+
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         dirnames.sort()
         filenames.sort()
-        rel = relpath_slash(dirpath, input_root)
-        if rel in ("", "."):
-            continue
-        prefix = rel + "/"
-        if not any(f["path"] == rel or f["path"].startswith(prefix) for f in files):
-            result.append(rel)
-    result.sort()
-    return result
+        rel_dir = norm_sep(os.path.relpath(dirpath, root))
 
+        # 当前目录本身（根目录除外）——只记录一次，避免空目录重复
+        if rel_dir != ".":
+            abs_d = dirpath
+            st = lstat_rec(abs_d, rel_dir, os.path.basename(dirpath))
+            if st is not None:
+                dirs.append({
+                    "path": rel_dir, "abs_path": norm_sep(abs_d),
+                    "name": os.path.basename(dirpath) or ".",
+                    "ext": None, "size": None, "mtime": None,
+                    "mode": mode_string(st.st_mode), "st_mode": st.st_mode,
+                    "st_dev": st.st_dev, "st_ino": st.st_ino, "nlink": st.st_nlink,
+                    "kind": "dir", "symlink_target": None, "symlink_broken": None,
+                    "role": "material", "empty": (not dirnames and not filenames),
+                    "hash_sha256": None, "hash_state": "non_regular",
+                    "text_state": None, "text_preview": None, "detected_encoding": None,
+                })
 
-def _inventory_result(files, dirs, empty_dirs, symlinks, errors, degradations, hardlinks):
-    files.sort(key=lambda x: x["path"])
-    dirs.sort(key=lambda x: x["path"])
+        # 符号链接目录：os.walk(followlinks=False) 不进入，这里单独记录
+        for d in dirnames:
+            abs_d = os.path.join(dirpath, d)
+            if not os.path.islink(abs_d):
+                continue
+            rel = norm_sep(os.path.relpath(abs_d, root))
+            st = lstat_rec(abs_d, rel, d)
+            if st is None:
+                continue
+            target = None
+            try:
+                target = os.readlink(abs_d)
+            except OSError as e:
+                errors.append({"type": "readlink_error", "locator": rel, "detail": str(e)})
+            dirs.append({
+                "path": rel, "abs_path": norm_sep(abs_d), "name": d,
+                "ext": None, "size": None, "mtime": None,
+                "mode": mode_string(st.st_mode), "st_mode": st.st_mode,
+                "st_dev": st.st_dev, "st_ino": st.st_ino, "nlink": st.st_nlink,
+                "kind": "symlink", "symlink_target": target,
+                "symlink_broken": not os.path.exists(os.path.join(dirpath, target)) if target else None,
+                "role": "material", "empty": False,
+                "hash_sha256": None, "hash_state": "non_regular",
+                "text_state": None, "text_preview": None, "detected_encoding": None,
+            })
+
+        # 文件（含符号链接文件）
+        for f in filenames:
+            abs_f = os.path.join(dirpath, f)
+            rel = norm_sep(os.path.relpath(abs_f, root))
+            is_link = os.path.islink(abs_f)
+            st = lstat_rec(abs_f, rel, f)
+            if st is None:
+                continue
+            rec = {
+                "path": rel, "abs_path": norm_sep(abs_f), "name": f,
+                "ext": os.path.splitext(f)[1].lower() or None,
+                "size": st.st_size,
+                "mtime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)),
+                "mode": mode_string(st.st_mode), "st_mode": st.st_mode,
+                "st_dev": st.st_dev, "st_ino": st.st_ino, "nlink": st.st_nlink,
+                "kind": file_kind(abs_f, is_link), "symlink_target": None,
+                "symlink_broken": None, "role": "material",
+                "hash_sha256": None, "hash_state": "pending",
+                "text_state": None, "text_preview": None, "detected_encoding": None,
+            }
+            if is_link:
+                try:
+                    target = os.readlink(abs_f)
+                except OSError as e:
+                    target = None
+                    errors.append({"type": "readlink_error", "locator": rel, "detail": str(e)})
+                rec["symlink_target"] = target
+                rec["symlink_broken"] = not os.path.exists(os.path.join(dirpath, target)) if target else None
+                rec["kind"] = "symlink"
+                rec["hash_state"] = "symlink"
+            files.append(rec)
+            if st.st_nlink > 1 and not is_link:
+                seen_inodes.setdefault((st.st_dev, st.st_ino), []).append(rel)
+
+    # 标记控制文件（case.json / task.md）
+    for rec in files:
+        base = os.path.basename(rec["path"])
+        if base in ("case.json", "task.md"):
+            rec["role"] = "control"
+
     return {
-        "files": files, "dirs": dirs, "empty_dirs": empty_dirs,
-        "symlinks": symlinks, "errors": errors, "degradations": degradations,
-        "hardlink_groups": hardlinks,
+        "files": files, "dirs": dirs,
+        "hardlink_inodes": {f"{d}:{i}": sorted(set(v)) for (d, i), v in seen_inodes.items() if len(v) > 1},
     }
 
 
-# ---------------------------------------------------------------------------
-# Dedup, version, aliases
-# ---------------------------------------------------------------------------
-
-def _norm_stem(path):
-    base = os.path.basename(path)
-    stem = os.path.splitext(base)[0].lower()
-    stem = re.sub(r"[\s\-_.,;()\[\]{}]+", "_", stem)
-    stem = re.sub(r"_(final|draft|rev|revision|copy|副本|old|new|updated|clean|scan|scanned|"
-                  r"submitted|submission|accepted|published|edited|ed|v\d+(\.\d+)*|\d+(\.\d+)*)$", "", stem)
-    stem = re.sub(r"_\d{4}[-_]\d{2}[-_]\d{2}$", "", stem)
-    stem = re.sub(r"_\d{8}$", "", stem)
-    stem = re.sub(r"_+", "_", stem).strip("_")
-    return stem or os.path.splitext(base)[0].lower()
+# --------------------------------------------------------------------------- #
+# 哈希与去重
+# --------------------------------------------------------------------------- #
+def hash_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
 
 
-def dedup_and_versions(inv):
-    hashed = [f for f in inv["files"]
-              if f.get("type") == "file" and f.get("hash_status") == "ok"]
-    by_hash = {}
-    for f in hashed:
-        by_hash.setdefault(f["sha256"], []).append(f["path"])
-    dup_groups = [{"sha256": h, "paths": sorted(p), "count": len(p)}
-                  for h, p in sorted(by_hash.items()) if len(p) > 1]
+def compute_hashes(files, root, errors, degradations):
+    hashes = {}
+    for rec in files:
+        if rec["kind"] != "file":
+            rec["hash_state"] = "non_regular"
+            continue
+        abs_f = rec["abs_path"]
+        size = rec["size"] or 0
+        if size > MAX_HASH_BYTES:
+            rec["hash_state"] = "too_large"
+            degradations.append({"type": "too_large", "locator": rec["path"], "detail": f"{size} bytes > {MAX_HASH_BYTES}"})
+            continue
+        try:
+            digest = hash_file(abs_f)
+        except OSError as e:
+            rec["hash_state"] = "unreadable"
+            errors.append({"type": "hash_error", "locator": rec["path"], "detail": str(e)})
+            continue
+        rec["hash_sha256"] = digest
+        rec["hash_state"] = "ok"
+        hashes.setdefault(digest, []).append(rec["path"])
+    return hashes
 
+
+def group_duplicates(hashes):
+    groups = []
+    gid = 0
+    for digest in sorted(hashes):
+        paths = sorted(hashes[digest])
+        if len(paths) > 1:
+            gid += 1
+            groups.append({"group_id": f"dup{gid:03d}", "sha256": digest, "paths": paths})
+    return groups
+
+
+# --------------------------------------------------------------------------- #
+# 版本候选（归一化主干 + 内容相似度，启发式）
+# --------------------------------------------------------------------------- #
+def normalized_stem(name):
+    stem = os.path.splitext(name)[0].lower()
+    stem = NORM_NOISE.sub(" ", stem)
+    stem = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", stem).strip()
+    return re.sub(r"\s+", " ", stem)
+
+
+def similarity(a, b):
+    if a is None or b is None or not a or not b:
+        return None
+    return round(difflib.SequenceMatcher(None, a[:4000], b[:4000]).ratio(), 4)
+
+
+def build_version_candidates(files, root, errors, degradations):
     by_stem = {}
-    for f in hashed:
-        by_stem.setdefault(_norm_stem(f["path"]), []).append(f)
-    version_candidates = []
-    version_notes = []
+    for rec in files:
+        if rec["kind"] != "file":
+            continue
+        stem = normalized_stem(rec["name"])
+        if not stem:
+            continue
+        by_stem.setdefault(stem, []).append(rec)
+
+    # 读取文本预览用于相似度
+    previews = {}
+    for rec in files:
+        if rec["kind"] != "file" or not is_text_like(rec["name"]):
+            previews[rec["path"]] = None
+            continue
+        text, state, enc, err = read_text_file(rec["abs_path"])
+        rec["detected_encoding"] = enc
+        if text is not None:
+            if looks_binary(text):
+                rec["text_state"] = "binary"
+                previews[rec["path"]] = None
+            else:
+                rec["text_state"] = state
+                rec["text_preview"] = text[:INDEX_PREVIEW]
+                previews[rec["path"]] = text
+        else:
+            rec["text_state"] = state
+            previews[rec["path"]] = None
+
+    groups = []
+    gid = 0
     for stem in sorted(by_stem):
-        group = sorted(by_stem[stem], key=lambda x: x["path"])
-        if len(group) < 2:
+        members = sorted(by_stem[stem], key=lambda r: r["path"])
+        unique = {}
+        for m in members:
+            unique.setdefault(m["hash_sha256"], m)
+        if len(unique) <= 1:
             continue
-        ids = [g["path"] for g in group]
-        unique_hashes = {g["sha256"] for g in group}
-        sims = []
-        for i in range(len(group)):
-            for j in range(i + 1, len(group)):
-                a = group[i].get("preview") or ""
-                b = group[j].get("preview") or ""
-                ratio = difflib.SequenceMatcher(None, a, b).ratio() if (a or b) else 0.0
-                sims.append({"a": group[i]["path"], "b": group[j]["path"],
-                             "similarity": round(ratio, 4)})
-        version_candidates.append({
-            "normalized_stem": stem, "paths": ids, "distinct_hashes": len(unique_hashes),
-            "pairwise_similarity": sorted(sims, key=lambda s: (-s["similarity"], s["a"], s["b"])),
-        })
-        version_notes.append({"stem": stem,
-                              "note": "heuristic: same normalized stem, %d content hash(es)" % len(unique_hashes)})
-    return {
-        "duplicate_groups": dup_groups,
-        "version_candidates": version_candidates,
-        "version_notes": version_notes,
-        "aliases": {
-            "symlinks": [s for s in inv["symlinks"]],
-            "hardlink_groups": inv["hardlink_groups"],
-            "broken_symlinks": [s for s in inv["symlinks"] if s.get("broken")],
-        },
-    }
+        gid += 1
+        group = {
+            "group_id": f"ver{gid:03d}", "stem": stem, "heuristic": True,
+            "note": "normalized-stem + content-diff candidates; human/agent should confirm",
+            "members": [],
+        }
+        for m in members:
+            pair = {
+                "path": m["path"], "sha256": m["hash_sha256"], "size": m["size"],
+                "similarity_to_first": None,
+            }
+            if members[0]["path"] != m["path"]:
+                pair["similarity_to_first"] = similarity(
+                    previews.get(members[0]["path"]), previews.get(m["path"]))
+            group["members"].append(pair)
+        groups.append(group)
+    return groups
 
 
-# ---------------------------------------------------------------------------
-# Catalog parsing and reconciliation
-# ---------------------------------------------------------------------------
-
-def parse_catalog(entry):
-    """Best-effort parse of a library catalog file. Returns records or None."""
-    if entry.get("type") != "file" or entry.get("hash_status") != "ok":
-        return None
-    ext = entry.get("extension")
-    path = entry["path"]
-    text = entry.get("full_text") or entry.get("preview") or ""
-    if ext == "json":
-        try:
-            obj = json.loads(text)
-        except Exception:
-            return None
-        if isinstance(obj, list) and obj and all(isinstance(x, dict) for x in obj):
-            return {"kind": "json", "source": path, "records": obj}
-        if isinstance(obj, dict):
-            for v in obj.values():
-                if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
-                    return {"kind": "json", "source": path, "records": v}
-        return None
-    if ext == "csv":
-        try:
-            rows = list(csv.DictReader(io.StringIO(text)))
-        except Exception:
-            return None
-        if rows:
-            return {"kind": "csv", "source": path, "records": rows}
-        return None
-    if ext in ("md", "markdown"):
-        rows = _parse_markdown_tables(text)
-        if rows:
-            return {"kind": "markdown", "source": path, "records": rows}
-        return None
-    if ext in ("bib", "bibtex"):
-        recs = _parse_bibtex(text)
-        if recs:
-            return {"kind": "bibtex", "source": path, "records": recs}
-        return None
-    if ext in ("ris",):
-        recs = _parse_ris(text)
-        if recs:
-            return {"kind": "ris", "source": path, "records": recs}
-        return None
-    if ext in ("db", "sqlite", "sqlite3"):
-        return _parse_sqlite(path)
-    # generic text: look for a markdown table even without the extension
-    rows = _parse_markdown_tables(text)
-    if rows and len(rows) >= 1:
-        return {"kind": "markdown", "source": path, "records": rows}
-    return None
+# --------------------------------------------------------------------------- #
+# 别名（符号链接 + 硬链接）
+# --------------------------------------------------------------------------- #
+def build_aliases(files, hardlink_inodes):
+    symlinks = []
+    for rec in files:
+        if rec["kind"] == "symlink":
+            symlinks.append({
+                "path": rec["path"], "target": rec["symlink_target"],
+                "broken": rec["symlink_broken"],
+            })
+    hardlinks = []
+    hid = 0
+    for key in sorted(hardlink_inodes):
+        paths = hardlink_inodes[key]
+        if len(paths) > 1:
+            hid += 1
+            hardlinks.append({"group_id": f"hard{hid:03d}", "inode": key, "paths": paths})
+    return {"symlinks": symlinks, "hardlink_groups": hardlinks}
 
 
-def _parse_markdown_tables(text):
-    records = []
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        if "|" in line:
-            block = []
-            while i < len(lines) and "|" in lines[i]:
-                block.append(lines[i].strip())
-                i += 1
-            if len(block) >= 2:
-                header = [c.strip() for c in block[0].strip("|").split("|")]
-                sep = block[1]
-                if set(sep.replace("|", "").replace("-", "").replace(":", "").strip()) == set():
-                    for row in block[2:]:
-                        cells = [c.strip() for c in row.strip("|").split("|")]
-                        if len(cells) == len(header):
-                            records.append(dict(zip(header, cells)))
+# --------------------------------------------------------------------------- #
+# 行政版本说明解析
+# --------------------------------------------------------------------------- #
+def parse_markdown_table(text):
+    rows = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
             continue
-        i += 1
-    return records
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
+            continue
+        rows.append(cells)
+    if not rows:
+        return []
+    header = rows[0]
+    out = []
+    for r in rows[1:]:
+        rec = {}
+        for i, h in enumerate(header):
+            if h and i < len(r):
+                rec[h] = r[i]
+        out.append(rec)
+    return out
 
 
-def _parse_bibtex(text):
+def normalize_note_record(rec):
+    out = {}
+    for k, v in rec.items():
+        kl = k.strip().lower()
+        if kl in ("file", "filename", "path", "文件", "文件名", "路径"):
+            out["file"] = v
+        elif kl in ("version", "ver", "版本"):
+            out["version"] = v
+        elif kl in ("status", "state", "状态"):
+            out["status"] = v
+        elif kl in ("date", "时间", "日期"):
+            out["date"] = v
+        elif kl in ("note", "notes", "说明", "备注"):
+            out["note"] = v
+        elif kl in ("id", "编号"):
+            out["id"] = v
+        elif kl in ("project", "项目", "project_id", "项目编号"):
+            out["project"] = v
+        elif kl in ("batch", "批次", "batch_id"):
+            out["batch"] = v
+        elif kl in ("permission", "权限", "perm"):
+            out["permission"] = v
+        else:
+            out[k.strip()] = v
+    return out
+
+
+def parse_version_notes(root, task_text, errors, degradations):
+    notes = []
+    sources = []
+    note_files = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        filenames.sort()
+        for f in filenames:
+            low = f.lower()
+            if re.search(r"(version|note|admin|版本|说明|清单)", low) and \
+               os.path.splitext(f)[1].lower() in (".json", ".csv", ".md", ".markdown"):
+                note_files.append(os.path.join(dirpath, f))
+    for path in note_files:
+        rel = norm_sep(os.path.relpath(path, root))
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext == ".json":
+                data, state, err = read_json_file(path)
+                if data is not None:
+                    if isinstance(data, list):
+                        items = data
+                    elif isinstance(data, dict):
+                        items = data.get("entries", data.get("records", data.get("versions", data.get("items", []))))
+                        if isinstance(items, dict):
+                            items = [items]
+                    else:
+                        items = []
+                    for rec in items:
+                        if isinstance(rec, dict):
+                            notes.append(normalize_note_record(rec))
+                    sources.append({"locator": rel, "quote": json.dumps(data, ensure_ascii=False)[:500]})
+            elif ext == ".csv":
+                text, state, enc, err = read_text_file(path)
+                if text:
+                    reader = csv.DictReader(io.StringIO(text))
+                    for rec in reader:
+                        notes.append(normalize_note_record(rec))
+                    sources.append({"locator": rel, "quote": text[:500]})
+            else:  # markdown
+                text, state, enc, err = read_text_file(path)
+                if text:
+                    rows = parse_markdown_table(text)
+                    for rec in rows:
+                        notes.append(normalize_note_record(rec))
+                    sources.append({"locator": rel, "quote": text[:500]})
+        except Exception as e:
+            errors.append({"type": "version_note_parse_error", "locator": rel, "detail": str(e)})
+
+    # 也解析 task.md 中的行政版本说明表格
+    if task_text:
+        for rec in parse_markdown_table(task_text):
+            nr = normalize_note_record(rec)
+            if nr.get("file") or nr.get("version"):
+                notes.append(nr)
+        if notes:
+            sources.append({"locator": "task.md", "quote": task_text[:500]})
+    return notes, sources
+
+
+# --------------------------------------------------------------------------- #
+# 库目录解析（JSON/CSV/Markdown/BibTeX/RIS/SQLite）
+# --------------------------------------------------------------------------- #
+def parse_bibtex(text):
     records = []
-    pattern = re.compile(r"@\w+\s*\{\s*([^,]+),\s*(.*?)\}\s*(?=@|\Z)", re.S | re.I)
+    pattern = re.compile(
+        r"@(\w+)\s*\{\s*([^,]+),\s*(.*?)\n\s*\}", re.S)
     for m in pattern.finditer(text):
-        key = m.group(1).strip()
-        body = m.group(2)
-        rec = {"_key": key}
-        field_pat = re.compile(r"(\w+)\s*=\s*[{\"](.*?)[}\"]", re.S)
-        for fm in field_pat.finditer(body):
-            rec[fm.group(1).lower()] = fm.group(2).strip()
+        etype, key, body = m.group(1), m.group(2).strip(), m.group(3)
+        rec = {"bibtype": etype, "key": key}
+        for f in re.finditer(r"(\w+)\s*=\s*[{\"](.*?)[}\"]\s*,?", body, re.S):
+            rec[f.group(1).lower()] = f.group(2)
         records.append(rec)
     return records
 
 
-def _parse_ris(text):
+def parse_ris(text):
     records = []
-    cur = {}
+    cur = None
     for line in text.splitlines():
-        if len(line) >= 6 and line[2:4] == "  ":
-            tag = line[:2].upper()
-            val = line[6:].strip()
-            if tag == "ER" and cur:
-                records.append(cur)
+        line = line.rstrip()
+        if len(line) >= 6 and line[2:4] == "  -":
+            tag, val = line[:2], line[6:]
+            if tag == "TY":
+                if cur:
+                    records.append(cur)
                 cur = {}
-            else:
-                cur[tag.lower()] = val
-        elif line.strip() == "" and cur:
+            if cur is not None:
+                cur.setdefault(tag, []).append(val)
+        elif line.strip() == "ER" and cur is not None:
             records.append(cur)
-            cur = {}
+            cur = None
     if cur:
         records.append(cur)
     return records
 
 
-def _parse_sqlite(path):
-    try:
-        con = sqlite3.connect(path)
-    except Exception:
-        return None
-    try:
-        cur = con.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = [r[0] for r in cur.fetchall()]
-        records = []
-        for t in tables:
-            try:
-                cur.execute("SELECT * FROM %s LIMIT 500" % _quote_ident(t))
-                cols = [d[0] for d in cur.description or []]
-                for row in cur.fetchall():
-                    records.append(dict(zip(cols, row)))
-            except Exception:
-                continue
-        con.close()
-        return {"kind": "sqlite", "source": path, "records": records,
-                "tables": tables}
-    except Exception:
+def parse_library_dirs(root, errors, degradations):
+    records = []
+    sources = []
+    lib_files = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        filenames.sort()
+        for f in filenames:
+            low = f.lower()
+            ext = os.path.splitext(f)[1].lower()
+            if re.search(r"(library|manifest|catalog|index|目录|清单|书目)", low) and \
+               ext in (".json", ".csv", ".md", ".markdown", ".bib", ".ris", ".db", ".sqlite", ".sqlite3"):
+                lib_files.append(os.path.join(dirpath, f))
+    for path in lib_files:
+        rel = norm_sep(os.path.relpath(path, root))
+        ext = os.path.splitext(path)[1].lower()
         try:
-            con.close()
-        except Exception:
-            pass
-        return None
+            if ext == ".json":
+                data, state, err = read_json_file(path)
+                if data is not None:
+                    items = data if isinstance(data, list) else \
+                        data.get("entries", data.get("records", data.get("files", data.get("items", []))))
+                    if isinstance(items, dict):
+                        items = [items]
+                    for rec in items:
+                        if isinstance(rec, dict):
+                            records.append(normalize_note_record(rec))
+                    sources.append({"locator": rel, "quote": json.dumps(data, ensure_ascii=False)[:500]})
+            elif ext == ".csv":
+                text, state, enc, err = read_text_file(path)
+                if text:
+                    reader = csv.DictReader(io.StringIO(text))
+                    for rec in reader:
+                        records.append(normalize_note_record(rec))
+                    sources.append({"locator": rel, "quote": text[:500]})
+            elif ext in (".md", ".markdown"):
+                text, state, enc, err = read_text_file(path)
+                if text:
+                    for rec in parse_markdown_table(text):
+                        records.append(normalize_note_record(rec))
+                    sources.append({"locator": rel, "quote": text[:500]})
+            elif ext == ".bib":
+                text, state, enc, err = read_text_file(path)
+                if text:
+                    for rec in parse_bibtex(text):
+                        records.append(normalize_note_record(rec))
+                    sources.append({"locator": rel, "quote": text[:500]})
+            elif ext == ".ris":
+                text, state, enc, err = read_text_file(path)
+                if text:
+                    for rec in parse_ris(text):
+                        records.append(normalize_note_record(rec))
+                    sources.append({"locator": rel, "quote": text[:500]})
+            else:  # sqlite
+                try:
+                    con = sqlite3.connect(path)
+                    cur = con.cursor()
+                    tables = [r[0] for r in cur.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+                    for t in tables:
+                        cols = [c[1] for c in cur.execute(f"PRAGMA table_info({t})").fetchall()]
+                        try:
+                            for row in cur.execute(f"SELECT * FROM {t} LIMIT 1000").fetchall():
+                                rec = dict(zip(cols, row))
+                                records.append(normalize_note_record(rec))
+                        except sqlite3.Error as e:
+                            errors.append({"type": "sqlite_query_error", "locator": rel, "detail": str(e)})
+                    sources.append({"locator": rel, "quote": f"sqlite tables: {tables}"})
+                    con.close()
+                except sqlite3.Error as e:
+                    errors.append({"type": "sqlite_open_error", "locator": rel, "detail": str(e)})
+        except Exception as e:
+            errors.append({"type": "library_parse_error", "locator": rel, "detail": str(e)})
+    return records, sources
 
 
-def _quote_ident(name):
-    return '"' + name.replace('"', '""') + '"'
+# --------------------------------------------------------------------------- #
+# 恢复对账
+# --------------------------------------------------------------------------- #
+def reconcile(files, library_records, version_notes):
+    by_path = {r["path"]: r for r in files if r["kind"] == "file"}
+    by_name = {os.path.basename(r["path"]): r for r in files if r["kind"] == "file"}
 
+    def locate(rec):
+        ref = rec.get("file") or rec.get("path") or rec.get("filename") or rec.get("id")
+        if not ref:
+            return None
+        if ref in by_path:
+            return by_path[ref], "path"
+        if ref in by_name:
+            return by_name[ref], "name"
+        # 尝试去掉目录前缀匹配
+        for p, r in by_path.items():
+            if p.endswith("/" + ref) or p == ref:
+                return r, "path_suffix"
+        return None, "missing"
 
-def _catalog_paths(records):
-    paths = []
-    for rec in records:
-        if not isinstance(rec, dict):
+    matches, mismatches, missing, orphaned = [], [], [], []
+    seen_paths = set()
+    for i, rec in enumerate(library_records):
+        target, how = locate(rec)
+        if target is None:
+            missing.append({"record": rec, "reason": "no matching file", "index": i})
             continue
-        for k in CATALOG_PATH_KEYS:
-            v = rec.get(k)
-            if isinstance(v, str) and v.strip():
-                paths.append({"path": v.strip(), "record": rec})
-                break
-    return paths
-
-
-def reconcile(inv, catalogs):
-    disk_paths = {f["path"] for f in inv["files"]}
-    disk_by_path = {f["path"]: f for f in inv["files"]}
-    if not catalogs:
-        return {"not_applicable": True, "detail": "no catalog file detected",
-                "matches": [], "mismatches": [], "missing": [], "orphaned": []}
-    matches, mismatches, missing = [], [], []
-    seen = set()
-    for cat in catalogs:
-        for item in _catalog_paths(cat.get("records", [])):
-            p = item["path"].replace("\\", "/").lstrip("./")
-            if p in seen:
-                continue
-            seen.add(p)
-            if p in disk_paths:
-                entry = disk_by_path[p]
-                rec = item["record"]
-                ok = True
-                detail = {}
-                if isinstance(rec.get("sha256"), str):
-                    if rec["sha256"].lower() != entry.get("sha256"):
-                        ok = False
-                        detail["hash"] = "mismatch"
-                if isinstance(rec.get("size"), (int, float)) and not isinstance(rec.get("size"), bool):
-                    if int(rec["size"]) != entry.get("size"):
-                        ok = False
-                        detail["size"] = "mismatch"
-                (matches if ok else mismatches).append(
-                    {"catalog_path": p, "disk_path": p, "source": cat["source"], "detail": detail})
+        seen_paths.add(target["path"])
+        entry = {"record": rec, "path": target["path"], "match_by": how}
+        if rec.get("hash_sha256") or rec.get("sha256") or rec.get("hash"):
+            expected = (rec.get("hash_sha256") or rec.get("sha256") or rec.get("hash")).lower()
+            actual = (target.get("hash_sha256") or "").lower()
+            if actual and expected == actual:
+                matches.append(entry)
             else:
-                missing.append({"catalog_path": p, "source": cat["source"],
-                                "record": item["record"]})
-    orphaned = [f["path"] for f in inv["files"]
-                if f["path"] not in seen and f["role"] == "material"]
-    return {"not_applicable": False,
-            "catalog_sources": [c["source"] for c in catalogs],
-            "matches": matches, "mismatches": mismatches,
-            "missing": missing, "orphaned": orphaned}
+                entry["expected_hash"] = expected
+                entry["actual_hash"] = actual or None
+                mismatches.append(entry)
+        else:
+            matches.append(entry)
+
+    for rec in version_notes:
+        target, how = locate(rec)
+        if target is not None:
+            seen_paths.add(target["path"])
+
+    # orphaned：真实材料文件未被任何库目录/版本说明引用
+    for r in files:
+        if r["kind"] == "file" and r["path"] not in seen_paths and r["role"] != "control":
+            orphaned.append({"path": r["path"], "reason": "not referenced by any manifest/version note"})
+
+    return {
+        "matches": matches, "mismatches": mismatches,
+        "missing": missing, "orphaned": orphaned,
+        "summary": {
+            "matches": len(matches), "mismatches": len(mismatches),
+            "missing": len(missing), "orphaned": len(orphaned),
+        },
+    }
 
 
-# ---------------------------------------------------------------------------
-# Index
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
+# 检索索引
+# --------------------------------------------------------------------------- #
+def tokenize(text):
+    toks = []
+    if not text:
+        return toks
+    low = text.lower()
+    toks.extend(WORD.findall(low))
+    cjk = CJK.findall(low)
+    for i in range(len(cjk) - 1):
+        toks.append(cjk[i] + cjk[i + 1])
+    return toks
 
-def build_index(inv, dedup_version):
-    entries = []
-    for f in inv["files"]:
-        e = {
-            "path": f["path"], "role": f["role"], "type": f["type"],
-            "size": f.get("size"), "extension": f.get("extension"),
-            "sha256": f.get("sha256"), "encoding": f.get("encoding"),
-            "normalized_stem": _norm_stem(f["path"]) if f.get("type") == "file" else None,
-            "keywords": _keywords(f["path"]),
+
+def build_index(files, root, errors, degradations):
+    from shutil import which
+    index = {"tokens": {}, "files": {}, "pdfs": []}
+    pdftotext = which("pdftotext")
+    for rec in files:
+        if rec["kind"] != "file":
+            continue
+        if rec.get("role") == "control":
+            continue  # 控制文件（case.json/task.md）不进可检索索引
+        meta = {
+            "path": rec["path"], "size": rec["size"], "ext": rec["ext"],
+            "mtime": rec["mtime"], "mode": rec["mode"], "hash": rec["hash_sha256"],
+            "text_state": rec.get("text_state"), "preview": rec.get("text_preview"),
+            "years": extract_years(rec.get("text_preview"), rec["mtime"]),
         }
-        text = f.get("full_text") or f.get("preview")
+        text = None
+        ext = rec["ext"] or ""
+        if ext == ".pdf":
+            # 可选：调用系统 pdftotext（存在则提取，失败降级）
+            if pdftotext and (rec["size"] or 0) <= MAX_PDF_BYTES and (rec["size"] or 0) > 0:
+                try:
+                    proc = subprocess.run(
+                        [pdftotext, "-layout", rec["abs_path"], "-"],
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        timeout=PDF_TIMEOUT,
+                    )
+                    text = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else None
+                    rec["text_state"] = "pdf_extracted" if text else "pdf_no_text"
+                    rec["text_preview"] = (text or "")[:INDEX_PREVIEW]
+                except (subprocess.SubprocessError, OSError) as e:
+                    rec["text_state"] = "pdf_extract_failed"
+                    degradations.append({"type": "pdf_extract_failed", "locator": rec["path"], "detail": str(e)})
+            else:
+                rec["text_state"] = rec.get("text_state") or "pdf_pending"
+            if rec["path"] not in index["files"]:
+                index["files"][rec["path"]] = meta
+            if text:
+                meta["preview"] = text[:INDEX_PREVIEW]
+                meta["text_state"] = "pdf_extracted"
+                meta["years"] = extract_years(text, rec["mtime"])
+                for tok in tokenize(text):
+                    index["tokens"].setdefault(tok, {}).setdefault(rec["path"], 0)
+                    index["tokens"][tok][rec["path"]] += 1
+            index["pdfs"].append(rec["path"])
+            continue
+        if rec.get("text_preview"):
+            text = rec["text_preview"]
+        elif rec.get("text_state") is None and is_text_like(rec["name"]):
+            t, state, enc, err = read_text_file(rec["abs_path"])
+            if t is not None and not looks_binary(t):
+                text = t
+                rec["text_state"] = state
+                rec["text_preview"] = text[:INDEX_PREVIEW]
+            else:
+                rec["text_state"] = state or "binary"
+        meta["preview"] = (text or "")[:INDEX_PREVIEW] if text else rec.get("text_preview")
+        meta["text_state"] = rec.get("text_state")
+        meta["years"] = extract_years(text or rec.get("text_preview"), rec["mtime"])
+        index["files"][rec["path"]] = meta
         if text:
-            e["text"] = text
-        entries.append(e)
-    by_hash = {}
-    for g in dedup_version["duplicate_groups"]:
-        by_hash[g["sha256"]] = g["paths"]
-    return {"entries": entries, "by_hash": by_hash,
-            "broken_symlinks": [s["path"] for s in dedup_version["aliases"]["broken_symlinks"]]}
+            for tok in tokenize(text):
+                index["tokens"].setdefault(tok, {}).setdefault(rec["path"], 0)
+                index["tokens"][tok][rec["path"]] += 1
+    return index
 
 
-def _keywords(path):
-    base = os.path.basename(path)
-    stem = os.path.splitext(base)[0]
-    tokens = re.split(r"[\s\-_.,;()\[\]{}+]+", stem.lower())
-    return [t for t in tokens if t]
+def extract_filters(question):
+    filters = {}
+    years = [int(y) for y in YEAR.findall(question)]
+    if years:
+        filters["year"] = years
+    exts = [e.lower() for e in EXT_IN_Q.findall(question)]
+    if exts:
+        filters["filetypes"] = exts
+    vers = []
+    for m in VER_IN_Q.finditer(question):
+        if m.group(1):
+            vers.append(m.group(1))
+        elif m.group(0):
+            vers.append(m.group(0))
+    if vers:
+        filters["versions"] = vers
+    projs = PROJ_IN_Q.findall(question)
+    if projs:
+        filters["projects"] = projs
+    if re.search(r"只读|readonly|read-only|权限", question, re.I):
+        filters["permission"] = True
+    return filters
 
 
-def search_index(index, query):
-    q = (query or "").strip().lower()
-    if not q:
-        return []
+def search_index(index, question, filters=None, topn=10):
+    filters = filters or {}
+    qtoks = tokenize(question)
+    if not qtoks:
+        return [], filters
+    scores = {}
+    for tok in set(qtoks):
+        for path, cnt in index["tokens"].get(tok, {}).items():
+            scores[path] = scores.get(path, 0) + min(cnt, 5)
+    ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[:topn * 3]
     hits = []
-    for e in index["entries"]:
-        hay = " ".join([e["path"].lower()] + e.get("keywords", []))
-        if e.get("text"):
-            hay += " " + e["text"].lower()
-        if q in hay:
-            hits.append(e["path"])
-    return sorted(hits)
+    unverified = []
+    for path, score in ranked:
+        meta = index["files"].get(path, {})
+        if filters.get("filetypes"):
+            ext = (meta.get("ext") or "").lstrip(".").lower()
+            if ext not in filters["filetypes"]:
+                continue
+        if filters.get("year"):
+            ys = meta.get("years") or []
+            if not any(y in ys for y in filters["year"]):
+                unverified.append({"path": path, "filter": "year", "years": ys})
+                continue
+        if filters.get("versions"):
+            if not any(v.lower() in path.lower() for v in filters["versions"]):
+                continue
+        if filters.get("projects"):
+            if not any(v.lower() in path.lower() for v in filters["projects"]):
+                continue
+        preview = meta.get("preview") or ""
+        snippet = preview[:240]
+        hits.append({
+            "path": path, "score": score, "ext": meta.get("ext"),
+            "years": meta.get("years"), "snippet": snippet,
+            "locator": path,
+        })
+        if len(hits) >= topn:
+            break
+    return hits, filters, unverified
 
 
-# ---------------------------------------------------------------------------
-# Mechanical answers
-# ---------------------------------------------------------------------------
+def find_questions(case, task_text):
+    questions = []
+    if case:
+        for k in ("questions", "queries", "asks", "search_questions", "检索问题"):
+            v = case.get(k)
+            if isinstance(v, list):
+                for q in v:
+                    if isinstance(q, str):
+                        questions.append(q)
+                    elif isinstance(q, dict):
+                        questions.append(q.get("q") or q.get("question") or "")
+            elif isinstance(v, str):
+                questions.append(v)
+            elif isinstance(v, dict):
+                questions.append(v.get("q") or v.get("question") or "")
+    # 从 task.md 中提取「提问/问题」行
+    for line in (task_text or "").splitlines():
+        m = re.match(r"\s*[-*]\s*(?:问题|Q\d*|提问)[:：]\s*(.+)", line)
+        if m:
+            questions.append(m.group(1).strip())
+    return questions
 
-def mechanical_answers(inv, dedup, rec, index):
+
+def answer_mechanical(questions, index, inv, dup_groups, version_candidates, aliases, recon):
     answers = []
-    files = [f for f in inv["files"] if f.get("type") == "file"]
-    answers.append(_a("文件总数", "inventory", len(files), "input inventory"))
-    answers.append(_a("目录总数", "inventory", len(inv["dirs"]), "input inventory"))
-    answers.append(_a("空目录", "inventory", len(inv["empty_dirs"]), "input inventory"))
-    answers.append(_a("符号链接总数", "aliases", len(inv["symlinks"]), "aliases"))
-    answers.append(_a("断链符号链接", "aliases", len(dedup["aliases"]["broken_symlinks"]),
-                      "aliases.broken_symlinks"))
-    answers.append(_a("硬链接组", "aliases", len(inv["hardlink_groups"]), "aliases.hardlink_groups"))
-    answers.append(_a("重复组(内容SHA-256)", "dedup", len(dedup["duplicate_groups"]),
-                      "dedup.duplicate_groups"))
-    answers.append(_a("版本候选组(启发式)", "dedup", len(dedup["version_candidates"]),
-                      "dedup.version_candidates"))
-    if not rec.get("not_applicable", True):
-        answers.append(_a("目录匹配", "reconciliation", len(rec.get("matches", [])),
-                          "reconciliation.matches"))
-        answers.append(_a("目录不一致", "reconciliation", len(rec.get("mismatches", [])),
-                          "reconciliation.mismatches"))
-        answers.append(_a("目录缺失", "reconciliation", len(rec.get("missing", [])),
-                          "reconciliation.missing"))
-        answers.append(_a("未登记(orphaned)", "reconciliation", len(rec.get("orphaned", [])),
-                          "reconciliation.orphaned"))
-    for f in files:
-        if f.get("sha256"):
-            answers.append(_a("sha256:" + f["path"], "hash", f["sha256"], "inventory.files"))
+    for q in questions:
+        filters = extract_filters(q)
+        hits, filters, unverified = search_index(index, q, filters)
+        answers.append({
+            "question": q,
+            "filters": filters,
+            "hits": hits,
+            "filter_unverified": unverified,
+            "status": "answered" if hits else ("no_hits" if not unverified else "filter_unsatisfied"),
+            "intent": "mechanical; agent may refine to chapter-level evidence",
+        })
     return answers
 
 
-def _a(question, category, value, locator):
-    return {"question": question, "category": category, "answer": value, "locator": locator}
+# --------------------------------------------------------------------------- #
+# case_id 与 contract
+# --------------------------------------------------------------------------- #
+def extract_case_id(case, task_text):
+    if case:
+        for k in ("case_id", "caseId", "id", "challenge_id"):
+            v = case.get(k)
+            if isinstance(v, str) and v:
+                return v
+    if task_text:
+        m = re.search(r"challenge_id[:：]\s*`?([A-Za-z0-9\-_]+)`?", task_text)
+        if m:
+            return m.group(1)
+        m = re.search(r"challenge[-_]?([A-Za-z0-9\-_]+)", task_text)
+        if m:
+            return m.group(0)
+    return "unknown_case"
 
 
-# ---------------------------------------------------------------------------
-# Artifacts
-# ---------------------------------------------------------------------------
+def find_contract(case):
+    if not isinstance(case, dict):
+        return None, None
+    for k in CONTRACT_KEYS:
+        if k in case and isinstance(case[k], (dict, list)):
+            return case[k], k
+    return None, None
 
-def write_artifacts(output_dir, inv, dedup, rec, index, answers):
-    ensure_dir(output_dir)
+
+DEFAULT_CONTRACT_FIELDS = [
+    "inventory", "directory_tree", "duplicate_groups", "version_candidates",
+    "aliases", "version_notes", "reconciliation", "index", "answers",
+    "sources", "uncertainty",
+]
+
+
+def echo_contract(result, contract):
+    """把 output_contract 字段原样回填到 result 顶层；冲突改存 _contract_<key>。"""
+    echoed = {}
+    if isinstance(contract, dict):
+        for k, v in contract.items():
+            if k in RESERVED:
+                result[f"_contract_{k}"] = v
+            else:
+                result[k] = v
+            echoed[k] = v
+    elif isinstance(contract, list):
+        for item in contract:
+            key = item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
+            if key in RESERVED:
+                result[f"_contract_{key}"] = None
+            else:
+                result[key] = None
+            echoed[key] = None
+    else:
+        for key in DEFAULT_CONTRACT_FIELDS:
+            result[key] = None
+            echoed[key] = None
+    return echoed
+
+
+# --------------------------------------------------------------------------- #
+# 产物写入
+# --------------------------------------------------------------------------- #
+def write_artifacts(output, work, result, inv, hashes, dup_groups, version_candidates,
+                    aliases, version_notes, recon, index, answers, sources):
+    os.makedirs(output, exist_ok=True)
     artifacts = {}
 
-    # manifest CSV
-    manifest_path = os.path.join(output_dir, "library_manifest.csv")
-    cols = ["path", "role", "type", "size", "mtime", "mode", "nlink", "extension",
-            "encoding", "sha256", "hash_status", "link_target", "broken", "readable"]
-    with open(manifest_path, "w", encoding="utf-8", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(cols)
-        for f in inv["files"]:
-            w.writerow([f.get(c) if f.get(c) is not None else "" for c in cols])
-    artifacts["library_manifest.csv"] = manifest_path
+    # 1. library_manifest.csv
+    manifest_path = os.path.join(output, "library_manifest.csv")
+    with open(manifest_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["path", "name", "ext", "kind", "size", "mtime", "mode",
+                    "hash_sha256", "hash_state", "symlink_target", "symlink_broken",
+                    "role", "text_state"])
+        for rec in sorted(inv["files"], key=lambda r: r["path"]):
+            w.writerow([rec["path"], rec["name"], rec["ext"] or "", rec["kind"],
+                        rec["size"] if rec["size"] is not None else "",
+                        rec["mtime"] or "", rec["mode"] or "", rec["hash_sha256"] or "",
+                        rec["hash_state"], rec["symlink_target"] or "",
+                        "" if rec["symlink_broken"] is None else str(rec["symlink_broken"]),
+                        rec["role"], rec["text_state"] or ""])
+    artifacts["library_manifest.csv"] = norm_sep(manifest_path)
 
-    # directory tree
-    tree_path = os.path.join(output_dir, "directory_tree.txt")
-    with open(tree_path, "w", encoding="utf-8") as fh:
-        fh.write(build_tree_text_from_inv(inv))
-    artifacts["directory_tree.txt"] = tree_path
+    # 2. directory_tree.txt
+    tree_path = os.path.join(output, "directory_tree.txt")
+    with open(tree_path, "w", encoding="utf-8") as f:
+        f.write("# directory tree (input root)\n")
+        # 以 dirname 为父键，统一用 "" 表示根目录
+        children = {}  # parent -> list of (path, line)
 
-    # dedup + version + aliases
-    dv_path = os.path.join(output_dir, "dedup_version.json")
-    write_json(dv_path, dedup)
-    artifacts["dedup_version.json"] = dv_path
+        def add_entry(parent, path, line):
+            key = "" if parent in (".", "") else parent
+            children.setdefault(key, []).append((path, line))
 
-    # recovery report
-    rec_path = os.path.join(output_dir, "recovery_report.json")
-    write_json(rec_path, rec)
-    artifacts["recovery_report.json"] = rec_path
+        for d in inv["dirs"]:
+            parent = os.path.dirname(d["path"])
+            mark = ""
+            if d.get("kind") == "symlink" and d.get("symlink_target"):
+                mark = f" -> {d['symlink_target']}"
+                if d.get("symlink_broken"):
+                    mark += " [断链]"
+            elif d.get("empty"):
+                mark = " [空目录]"
+            add_entry(parent, d["path"], d["name"] + "/" + mark)
+        for rec in inv["files"]:
+            parent = os.path.dirname(rec["path"])
+            mark = ""
+            if rec["kind"] == "symlink":
+                mark = f" -> {rec['symlink_target']}" + (" [断链]" if rec["symlink_broken"] else "")
+            add_entry(parent, rec["path"], rec["name"] + mark)
 
-    # index
-    idx_path = os.path.join(output_dir, "library_index.json")
-    write_json(idx_path, index)
-    artifacts["library_index.json"] = idx_path
+        def render(parent, depth):
+            for path, line in sorted(children.get(parent, []), key=lambda x: x[0]):
+                f.write("  " * depth + line + "\n")
+                if path in children:
+                    render(path, depth + 1)
+        render("", 0)
+    artifacts["directory_tree.txt"] = norm_sep(tree_path)
 
-    # markdown handoff
-    md_path = os.path.join(output_dir, "library_manifest.md")
-    with open(md_path, "w", encoding="utf-8") as fh:
-        fh.write(render_handoff(inv, dedup, rec, answers))
-    artifacts["library_manifest.md"] = md_path
+    # 3. dedup_version.json
+    dedup_path = os.path.join(output, "dedup_version.json")
+    with open(dedup_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "duplicate_groups": dup_groups,
+            "version_candidates": version_candidates,
+            "version_notes": version_notes,
+            "aliases": aliases,
+        }, f, ensure_ascii=False, indent=2)
+    artifacts["dedup_version.json"] = norm_sep(dedup_path)
 
-    # operation log (append)
-    log_path = os.path.join(output_dir, "operation_log.jsonl")
-    append_jsonl(log_path, {"time": now_utc(), "actor": "script", "step": "pipeline",
-                            "detail": "inventory/dedup/version/alias/catalog/index/answers written"})
-    artifacts["operation_log.jsonl"] = log_path
+    # 4. recovery_report.json
+    recovery_path = os.path.join(output, "recovery_report.json")
+    with open(recovery_path, "w", encoding="utf-8") as f:
+        json.dump(recon, f, ensure_ascii=False, indent=2)
+    artifacts["recovery_report.json"] = norm_sep(recovery_path)
+
+    # 5. library_index.json
+    index_path = os.path.join(output, "library_index.json")
+    with open(index_path, "w", encoding="utf-8") as f:
+        json.dump({"files": index["files"], "tokens": index["tokens"], "pdfs": index["pdfs"]},
+                  f, ensure_ascii=False, indent=2)
+    artifacts["library_index.json"] = norm_sep(index_path)
+
+    # 6. library_manifest.md
+    md_path = os.path.join(output, "library_manifest.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("# 科研资料库交接报告\n\n")
+        summ = result.get("result", {}).get("summary", {})
+        f.write(f"- case_id: {result.get('case_id')}\n")
+        f.write(f"- status: {result.get('status')}\n")
+        f.write(f"- files: {summ.get('files')} / dirs: {summ.get('dirs')}\n")
+        f.write(f"- duplicate_groups: {summ.get('duplicate_groups')}\n")
+        f.write(f"- version_candidates: {summ.get('version_candidates')}\n")
+        f.write(f"- broken_symlinks: {summ.get('broken_symlinks')}\n")
+        f.write(f"- hardlink_groups: {summ.get('hardlink_groups')}\n")
+        f.write(f"- reconcile: {summ.get('reconcile')}\n\n")
+        f.write("## 文件清单\n\n| path | kind | size | hash |\n|-|-|-|-|\n")
+        for rec in sorted(inv["files"], key=lambda r: r["path"]):
+            f.write(f"| {rec['path']} | {rec['kind']} | {rec['size']} | "
+                    f"{rec['hash_sha256'][:12] if rec['hash_sha256'] else ''} |\n")
+    artifacts["library_manifest.md"] = norm_sep(md_path)
+
+    # 7. operation_log.jsonl
+    log_path = os.path.join(output, "operation_log.jsonl")
+    with open(log_path, "w", encoding="utf-8") as f:
+        for entry in result.get("change_log", []):
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    artifacts["operation_log.jsonl"] = norm_sep(log_path)
 
     return artifacts
 
 
-def build_tree_text_from_inv(inv):
-    lines = ["input"]
-    # group children by parent
-    children = {}
-    for d in inv["dirs"]:
-        p = d["path"]
-        parent = os.path.dirname(p) if os.path.dirname(p) else ""
-        children.setdefault(parent, []).append((os.path.basename(p), "d", p))
-    for f in inv["files"]:
-        p = f["path"]
-        parent = os.path.dirname(p)
-        children.setdefault(parent, []).append((os.path.basename(p), "f", p))
-    for k in children:
-        children[k].sort(key=lambda x: (x[1], x[0]))
-
-    def rec(rel, prefix, is_last):
-        name = os.path.basename(rel) if rel else "input"
-        lines.append(prefix + ("`-- " if is_last else "|-- ") + name)
-        kids = children.get(rel, [])
-        for i, (cname, ctype, cpath) in enumerate(kids):
-            rec(cpath, prefix + ("    " if is_last else "|   "), i == len(kids) - 1)
-
-    kids = children.get("", [])
-    for i, (cname, ctype, cpath) in enumerate(kids):
-        rec(cpath, "", i == len(kids) - 1)
-    for d in inv["empty_dirs"]:
-        lines.append("[空目录] " + d)
-    return "\n".join(lines) + "\n"
-
-
-def render_handoff(inv, dedup, rec, answers):
-    n_files = len([f for f in inv["files"] if f.get("type") == "file"])
-    lines = [
-        "# 资料库交接报告（自动生成）",
-        "",
-        "- 生成时间：%s" % now_utc(),
-        "- 文件数：%d；目录数：%d；空目录：%d" % (n_files, len(inv["dirs"]), len(inv["empty_dirs"])),
-        "- 重复组：%d；版本候选：%d" % (len(dedup["duplicate_groups"]), len(dedup["version_candidates"])),
-        "- 断链符号链接：%d；硬链接组：%d" % (len(dedup["aliases"]["broken_symlinks"]),
-                                             len(inv["hardlink_groups"])),
-        "",
-        "## 重复组",
-    ]
-    for g in dedup["duplicate_groups"]:
-        lines.append("- %s（%d 份）：%s" % (g["sha256"][:12], g["count"], ", ".join(g["paths"])))
-    lines += ["", "## 版本候选（启发式）"]
-    for v in dedup["version_candidates"]:
-        lines.append("- 主干 `%s`：%s" % (v["normalized_stem"], ", ".join(v["paths"])))
-    lines += ["", "## 对账"]
-    if rec.get("not_applicable", True):
-        lines.append("- 未检测到库目录文件：" + rec.get("detail", ""))
-    else:
-        lines.append("- matches %d；mismatches %d；missing %d；orphaned %d" % (
-            len(rec.get("matches", [])), len(rec.get("mismatches", [])),
-            len(rec.get("missing", [])), len(rec.get("orphaned", []))))
-    lines += ["", "## 机械问答"]
-    for a in answers:
-        lines.append("- %s → %s" % (a["question"], json.dumps(a["answer"], ensure_ascii=False)))
-    lines += ["", "> 本报告为机械汇总；语义结论与证据见 result.json 的 sources/uncertainty。"]
-    return "\n".join(lines) + "\n"
-
-
-# ---------------------------------------------------------------------------
-# Budget / checkpoint ledger
-# ---------------------------------------------------------------------------
-
-def load_budget(work_dir):
-    path = os.path.join(work_dir, "budget.json")
-    b = read_json(path)
-    if isinstance(b, dict) and "plan" in b:
-        return path, b
-    started = now_utc()
-    b = {
-        "plan": {"total_s": TOTAL_BUDGET_S, "total_requests": TOTAL_REQUEST_BUDGET,
-                 "phases": PLAN_PHASES},
-        "started_utc": started,
-        "deadline_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                                      time.gmtime(time.time() + TOTAL_BUDGET_S)),
-        "checkpoints": [],
-    }
-    write_json(path, b)
-    return path, b
-
-
-def append_checkpoint(work_dir, phase_id, detail, elapsed_s=None):
-    path, b = load_budget(work_dir)
-    b.setdefault("checkpoints", []).append({
-        "utc": now_utc(), "phase": phase_id, "detail": detail,
-        "elapsed_s": round(elapsed_s if elapsed_s is not None else time.time() - _parse_utc(b.get("started_utc")), 1),
-    })
-    write_json(path, b)
-    return path
-
-
-def _parse_utc(s):
-    try:
-        return time.mktime(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ"))
-    except Exception:
-        return time.time()
-
-
-def budget_report(work_dir):
-    path, b = load_budget(work_dir)
-    out = []
-    out.append("budget plan: %d s / %d requests" % (b["plan"]["total_s"], b["plan"]["total_requests"]))
-    for p in b["plan"]["phases"]:
-        out.append("- %-12s %-14s %4ds / %2d requests" % (p["id"], p["name"], p["budget_s"], p["request_budget"]))
-    out.append("checkpoints: %d" % len(b.get("checkpoints", [])))
-    for c in b.get("checkpoints", []):
-        out.append("  %s [%s] %s" % (c["utc"], c["phase"], c["detail"]))
-    return "\n".join(out)
-
-
-# ---------------------------------------------------------------------------
-# Result assembly
-# ---------------------------------------------------------------------------
-
-def summarize(inv, dedup, rec, index, answers):
+# --------------------------------------------------------------------------- #
+# 汇总
+# --------------------------------------------------------------------------- #
+def build_summary(inv, dup_groups, version_candidates, aliases, recon, index):
     return {
-        "files": len([f for f in inv["files"] if f.get("type") == "file"]),
-        "directories": len(inv["dirs"]),
-        "empty_directories": len(inv["empty_dirs"]),
-        "symlinks": len(inv["symlinks"]),
-        "broken_symlinks": len(dedup["aliases"]["broken_symlinks"]),
-        "hardlink_groups": len(inv["hardlink_groups"]),
-        "duplicate_groups": len(dedup["duplicate_groups"]),
-        "version_candidates": len(dedup["version_candidates"]),
-        "total_bytes": sum(f.get("size") or 0 for f in inv["files"]),
-        "catalog_sources": rec.get("catalog_sources", []),
-        "errors": len(inv["errors"]),
-        "degradations": len(inv["degradations"]),
+        "files": len([r for r in inv["files"] if r["kind"] == "file"]),
+        "dirs": len(inv["dirs"]),
+        "symlinks": len([r for r in inv["files"] if r["kind"] == "symlink"]),
+        "duplicate_groups": len(dup_groups),
+        "version_candidates": len(version_candidates),
+        "broken_symlinks": sum(1 for s in aliases["symlinks"] if s["broken"]),
+        "hardlink_groups": len(aliases["hardlink_groups"]),
+        "reconcile": recon["summary"],
+        "indexed_files": len(index["files"]),
+        "total_tokens": len(index["tokens"]),
     }
 
 
-def assemble_result(case, task_text, inv, dedup, rec, index, answers, artifacts, start_t):
-    contract_key, contract = discover_contract(case)
-    if contract is None:
-        contract = default_contract()
-        contract_key = "default"
-    case_id = discover_case_id(case, task_text)
-    title = task_title(case, task_text)
-    status = _initial_status(case, inv)
-    result = build_skeleton(case_id, status, contract, title)
-    result["output_contract"] = contract
-    result["library_summary"] = summarize(inv, dedup, rec, index, answers)
-    result["file_manifest"] = [
-        {k: f.get(k) for k in ("path", "role", "type", "size", "mtime", "mode", "extension",
-                               "encoding", "sha256", "hash_status", "link_target", "broken")}
-        for f in inv["files"]
-    ]
-    result["metadata"] = [_lean_file(f) for f in inv["files"]
-                          if f.get("preview") or f.get("extension")]
-    result["directory_tree"] = build_tree_text_from_inv(inv)
-    result["version_relations"] = dedup["version_candidates"]
-    result["reconciliation"] = rec
-    result["index"] = index
-    result["answers"] = answers
-    result["hashes"] = [{"path": f["path"], "sha256": f["sha256"]}
-                        for f in inv["files"] if f.get("sha256")]
-    result["permissions"] = [{"path": f["path"], "mode": f.get("mode"), "readable": f.get("readable")}
-                             for f in inv["files"]]
-    result["changes"] = []
-    result["skipped"] = inv["degradations"]
-    result["conflicts"] = rec.get("mismatches", [])
-    result["recovery"] = {"missing": rec.get("missing", []), "broken_symlinks":
-                          dedup["aliases"]["broken_symlinks"]}
-    result["computed"] = {
-        "files": [_lean_file(f) for f in inv["files"]],
-        "summary": result["library_summary"],
-        "duplicate_groups": dedup["duplicate_groups"],
-        "version_candidates": dedup["version_candidates"],
-        "version_notes": dedup["version_notes"],
-        "aliases": dedup["aliases"],
-        "reconciliation": rec,
+# --------------------------------------------------------------------------- #
+# 主流程
+# --------------------------------------------------------------------------- #
+def run_pipeline(args):
+    start = time.time()
+    os.makedirs(args.output, exist_ok=True)
+    os.makedirs(args.work, exist_ok=True)
+    errors, degradations = [], []
+    change_log = []
+
+    case_path = find_file(args.input, "case.json", fallback=args.case_json)
+    task_path = find_file(args.input, "task.md", fallback=args.task_path)
+    case = None
+    if case_path:
+        case, cstate, cerr = read_json_file(case_path)
+        if case is None:
+            errors.append({"type": "case_json_error", "locator": norm_sep(case_path), "detail": cstate or cerr})
+    task_text = ""
+    if task_path:
+        t, tstate, enc, terr = read_text_file(task_path)
+        if t is not None:
+            task_text = t
+        else:
+            errors.append({"type": "task_read_error", "locator": norm_sep(task_path), "detail": tstate or terr})
+
+    case_id = extract_case_id(case, task_text)
+    contract, contract_key = find_contract(case)
+    log_change(change_log, "script", "init", f"case_id={case_id}; contract_key={contract_key}")
+
+    # 骨架模式：快速落盘，不跑盘点
+    if args.skeleton_only:
+        result = {
+            "case_id": case_id, "status": "partial", "contract_key": contract_key,
+            "contract": {}, "result": {}, "sources": [], "uncertainty": [],
+            "pending_human": [], "errors": errors, "degradations": [],
+            "limitations": ["skeleton-only: inventory pending"],
+            "runtime": {"seconds": round(time.time() - start, 3), "python": sys.version.split()[0]},
+            "change_log": change_log, "artifacts": {}, "computed": {},
+        }
+        result["contract"] = echo_contract(result, contract)
+        if contract is None:
+            result.setdefault("uncertainty", []).append(
+                {"item": "output_contract", "reason": "case.json 无显式 output_contract，使用默认字段占位",
+                 "severity": "low"})
+        write_result(args.output, result)
+        return result
+
+    # 1. 盘点
+    inv = inventory(args.input, errors, degradations)
+    log_change(change_log, "script", "inventory",
+               f"{len(inv['files'])} files, {len(inv['dirs'])} dirs")
+
+    # 2. 哈希 + 去重
+    hashes = compute_hashes(inv["files"], args.input, errors, degradations)
+    dup_groups = group_duplicates(hashes)
+    log_change(change_log, "script", "dedup", f"{len(dup_groups)} duplicate groups")
+
+    # 3. 版本候选
+    version_candidates = build_version_candidates(inv["files"], args.input, errors, degradations)
+    log_change(change_log, "script", "version", f"{len(version_candidates)} version candidates")
+
+    # 4. 别名
+    aliases = build_aliases(inv["files"], inv["hardlink_inodes"])
+    log_change(change_log, "script", "alias",
+               f"{len(aliases['symlinks'])} symlinks, {len(aliases['hardlink_groups'])} hardlink groups")
+
+    # 5. 版本说明
+    version_notes, note_sources = parse_version_notes(args.input, task_text, errors, degradations)
+    log_change(change_log, "script", "version_notes", f"{len(version_notes)} notes")
+
+    # 6. 库目录
+    library_records, lib_sources = parse_library_dirs(args.input, errors, degradations)
+    log_change(change_log, "script", "library_dirs", f"{len(library_records)} records")
+
+    # 7. 对账
+    recon = reconcile(inv["files"], library_records, version_notes)
+    log_change(change_log, "script", "reconcile", json.dumps(recon["summary"], ensure_ascii=False))
+
+    # 8. 索引
+    index = build_index(inv["files"], args.input, errors, degradations)
+    log_change(change_log, "script", "index", f"{len(index['files'])} files indexed")
+
+    # 9. 机械问答
+    questions = find_questions(case, task_text)
+    answers = answer_mechanical(questions, index, inv, dup_groups, version_candidates, aliases, recon)
+    log_change(change_log, "script", "answers", f"{len(answers)} questions answered")
+
+    summary = build_summary(inv, dup_groups, version_candidates, aliases, recon, index)
+
+    sources = []
+    for s in note_sources + lib_sources:
+        sources.append({"item": s.get("locator"), "locator": s.get("locator"),
+                        "quote": s.get("quote", "")})
+
+    # 状态判定
+    material_files = [r for r in inv["files"] if r["role"] != "control"]
+    if not case_path and not task_path:
+        status = "input_error"
+    elif not material_files and not inv["dirs"]:
+        status = "insufficient_evidence"
+    elif errors and not any(r["kind"] == "file" for r in inv["files"]):
+        status = "partial"
+    else:
+        status = "ok"
+    if errors:
+        status = "partial"
+
+    result_obj = {
+        "summary": summary,
+        "files": sorted(inv["files"], key=lambda r: r["path"]),
+        "directory_tree": "",  # 文本见产物
+        "duplicate_groups": dup_groups,
+        "version_candidates": version_candidates,
+        "aliases": aliases,
+        "version_notes": version_notes,
+        "reconciliation": recon,
+        "index": {"files": index["files"], "pdfs": index["pdfs"], "token_count": len(index["tokens"])},
         "answers": answers,
-        "index": index,
-        "artifacts": {k: os.path.basename(v) for k, v in artifacts.items()},
     }
-    result["errors"] = inv["errors"]
-    result["degradations"] = inv["degradations"]
-    result["limitations"] = [
-        "机械层不解析 PDF/Office 文本层；由 Agent 调用平台 pdftotext/pdf-render/ocr 工具补语义",
-        "版本候选与目录对账为启发式，须以 sources/uncertainty 标注",
-    ]
-    result["artifacts"] = {k: os.path.basename(v) for k, v in artifacts.items()}
-    result["runtime"]["elapsed_s"] = round(time.time() - start_t, 3)
-    result["runtime"]["finished_utc"] = now_utc()
-    result["change_log"].append({"time": now_utc(), "actor": "script", "step": "pipeline",
-                                 "detail": "mechanical artifacts written"})
-    return result, contract_key
+
+    result = {
+        "case_id": case_id, "status": status, "contract_key": contract_key,
+        "contract": {}, "result": result_obj, "sources": sources,
+        "uncertainty": [], "pending_human": [], "errors": errors,
+        "degradations": degradations,
+        "limitations": ["version chain and answers are heuristic; agent must verify chapter-level evidence"],
+        "runtime": {"seconds": round(time.time() - start, 3), "python": sys.version.split()[0]},
+        "change_log": change_log, "artifacts": {}, "computed": {},
+    }
+    if version_candidates:
+        result["uncertainty"].append(
+            {"item": "version_candidates", "reason": "归一化主干+内容相似度为启发式，可能把不同文档误聚为一链",
+             "severity": "medium"})
+    if contract is None:
+        result["uncertainty"].append(
+            {"item": "output_contract", "reason": "case.json 无显式 output_contract，使用默认字段",
+             "severity": "low"})
+
+    # 产物
+    artifacts = write_artifacts(args.output, args.work, result, inv, hashes, dup_groups,
+                                version_candidates, aliases, version_notes, recon, index,
+                                answers, sources)
+    result["artifacts"] = artifacts
+    result["computed"] = {
+        "summary": summary,
+        "artifact_paths": artifacts,
+        "counts": {
+            "duplicate_groups": len(dup_groups), "version_candidates": len(version_candidates),
+            "symlinks": len(aliases["symlinks"]), "hardlink_groups": len(aliases["hardlink_groups"]),
+            "version_notes": len(version_notes), "library_records": len(library_records),
+            "answers": len(answers),
+        },
+    }
+
+    # contract 回填
+    result["contract"] = echo_contract(result, contract)
+
+    log_change(change_log, "script", "finalize",
+               f"status={status}; {summary['files']} files; {summary['duplicate_groups']} dup groups; "
+               f"{summary['version_candidates']} version candidates; {summary['broken_symlinks']} broken symlinks; "
+               f"{summary['reconcile']['mismatches']} reconcile mismatches")
+    write_result(args.output, result)
+    return result
 
 
-def _lean_file(f):
-    """Drop bulk text from result.json copies; keep it only in library_index.json."""
-    out = {k: v for k, v in f.items() if k != "full_text"}
-    return out
+def write_result(output, result):
+    path = os.path.join(output, "result.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        # 写盘失败：尝试工作目录兜底，退出码 2
+        fallback = os.path.join(output, "result.json.failed")
+        try:
+            with open(fallback, "w", encoding="utf-8") as f:
+                json.dump({"case_id": result.get("case_id"), "status": "input_error",
+                           "errors": [{"type": "write_failure", "detail": str(e)}]},
+                          f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+        sys.stderr.write(f"write_failure: {e}\n")
+        raise SystemExit(2)
 
 
-def _initial_status(case, inv):
-    if not isinstance(case, dict):
-        return "input_error"
-    material = [f for f in inv["files"] if f.get("role") == "material"]
-    if not material:
-        return "insufficient_evidence"
-    return "partial"
-
-
-# ---------------------------------------------------------------------------
-# Update / check
-# ---------------------------------------------------------------------------
-
+# --------------------------------------------------------------------------- #
+# --update / --check
+# --------------------------------------------------------------------------- #
 def deep_merge(base, patch):
-    append_keys = {"change_log", "sources", "uncertainty", "errors", "degradations", "limitations"}
     for k, v in patch.items():
-        if k in append_keys and isinstance(v, list) and isinstance(base.get(k), list):
-            base[k].extend(v)
-        elif k == "computed" and isinstance(v, dict) and isinstance(base.get(k), dict):
-            _merge_dict(base["computed"], v)
-        elif isinstance(v, dict) and isinstance(base.get(k), dict) and k != "output_contract":
-            _merge_dict(base[k], v)
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            deep_merge(base[k], v)
         else:
             base[k] = v
     return base
 
 
-def _merge_dict(base, patch):
-    for k, v in patch.items():
-        if isinstance(v, dict) and isinstance(base.get(k), dict):
-            _merge_dict(base[k], v)
-        else:
-            base[k] = v
+def do_update(patch_path, result_path):
+    with open(patch_path, "r", encoding="utf-8-sig") as f:
+        patch = json.load(f)
+    if os.path.exists(result_path):
+        with open(result_path, "r", encoding="utf-8") as f:
+            result = json.load(f)
+    else:
+        result = {"case_id": None, "status": "partial"}
+    deep_merge(result, patch)
+    log_change(result.setdefault("change_log", []), "agent", "update",
+               f"merged patch {os.path.basename(patch_path)}")
+    write_result(os.path.dirname(result_path) or ".", result)
+    print(f"update: merged {len(patch)} top-level keys -> {result_path}")
+    return result
 
 
-def apply_update(result_path, patch_path, output_dir):
-    result = read_json(result_path, {})
-    patch = load_patch(patch_path)
-    if not patch:
-        return result, 0, "empty patch; nothing merged"
-    base_contract = result.get("output_contract") if isinstance(result, dict) else None
-    result = deep_merge(result or {}, patch)
-    if isinstance(base_contract, dict):
-        result["output_contract"] = base_contract
-    write_json(result_path, result)
-    append_jsonl(os.path.join(output_dir, "operation_log.jsonl"),
-                 {"time": now_utc(), "actor": "script", "step": "update",
-                  "detail": "patch merged from %s" % os.path.basename(patch_path)})
-    return result, 0, "merged patch"
-
-
-def check_result(result_path, case):
+def do_check(result_path, case_path):
     problems = []
-    result = read_json(result_path)
-    if not isinstance(result, dict):
-        return ["result.json is not a JSON object"], False
-    if not result.get("case_id"):
-        problems.append("case_id missing/empty")
-    if result.get("status") not in ALLOWED_STATUS:
-        problems.append("status invalid: %r" % result.get("status"))
-    for k in ("sources", "uncertainty", "change_log", "errors", "degradations"):
-        if k not in result:
-            problems.append("missing field: %s" % k)
-    contract = result.get("output_contract")
-    if isinstance(contract, dict):
-        for k in contract.keys():
-            if k not in result and k not in RESERVED_KEYS:
-                problems.append("contract field not echoed: %s" % k)
-    # evidence shape check
-    for s in result.get("sources", []):
-        if not isinstance(s, dict) or not s.get("locator") or not s.get("quote"):
-            problems.append("source entry missing locator/quote: %s" % str(s)[:80])
-    return problems, not problems
-
-
-# ---------------------------------------------------------------------------
-# Main pipeline
-# ---------------------------------------------------------------------------
-
-def run_pipeline(args):
-    start_t = time.time()
-    case = read_json(args.case_json) if os.path.exists(args.case_json) else None
-    task_text = ""
-    if os.path.exists(args.task_path):
-        text, _, _ = read_text_file(args.task_path)
-        task_text = text or ""
-
-    if args.skeleton_only:
-        contract_key, contract = discover_contract(case)
-        if contract is None:
-            contract = default_contract()
-        case_id = discover_case_id(case, task_text)
-        title = task_title(case, task_text)
-        result = build_skeleton(case_id, "input_error" if not isinstance(case, dict) else "partial",
-                                contract, title)
-        ensure_dir(args.output_dir)
-        result_path = os.path.join(args.output_dir, "result.json")
-        write_json(result_path, result)
-        ensure_dir(args.work_dir)
-        append_checkpoint(args.work_dir, "0_skeleton", "skeleton written to %s" % result_path,
-                          time.time() - start_t)
-        print("skeleton: %s (status=%s, contract=%s)" % (result_path, result["status"], contract_key))
-        return 0
-
-    if args.budget:
-        print(budget_report(args.work_dir))
-        return 0
-
-    result_path = args.result or args.result_arg or os.path.join(args.output_dir, "result.json")
-
-    if args.update:
-        _, code, msg = apply_update(result_path, args.update, args.output_dir)
-        print(msg)
-        return code
-
-    if args.check:
-        problems, ok = check_result(result_path, case)
-        if ok:
-            print("check: PASS")
-            return 0
+    if not os.path.exists(result_path):
+        problems.append(f"missing result file: {result_path}")
+    else:
+        with open(result_path, "r", encoding="utf-8") as f:
+            result = json.load(f)
+        if not result.get("case_id"):
+            problems.append("case_id empty")
+        if result.get("status") not in STATUSES:
+            problems.append(f"invalid status: {result.get('status')}")
+        if case_path and os.path.exists(case_path):
+            case, state, err = read_json_file(case_path)
+            if case is not None:
+                contract, ck = find_contract(case)
+                if contract is not None:
+                    keys = contract if isinstance(contract, list) else list(contract.keys())
+                    for k in keys:
+                        key = k if isinstance(k, str) else k
+                        if key not in result and f"_contract_{key}" not in result:
+                            problems.append(f"contract field missing: {key}")
+        for artifact in ("library_manifest.csv", "directory_tree.txt", "dedup_version.json",
+                         "recovery_report.json", "library_index.json", "library_manifest.md",
+                         "operation_log.jsonl"):
+            if not os.path.exists(os.path.join(os.path.dirname(result_path), artifact)):
+                problems.append(f"artifact missing: {artifact}")
+    if problems:
+        print("CHECK FAIL")
         for p in problems:
-            print("check: FAIL - %s" % p)
-        return 1
-
-    # full pipeline
-    ensure_dir(args.output_dir)
-    ensure_dir(args.work_dir)
-    try:
-        inv = inventory(args.input_root, args.max_hash)
-        dedup = dedup_and_versions(inv)
-        catalogs = []
-        for f in inv["files"]:
-            if f.get("role") == "material":
-                c = parse_catalog(f)
-                if c:
-                    catalogs.append(c)
-        rec = reconcile(inv, catalogs)
-        index = build_index(inv, dedup)
-        answers = mechanical_answers(inv, dedup, rec, index)
-        artifacts = write_artifacts(args.output_dir, inv, dedup, rec, index, answers)
-        result, _ = assemble_result(case, task_text, inv, dedup, rec, index, answers, artifacts, start_t)
-        write_json(result_path, result)
-        append_checkpoint(args.work_dir, "1_mechanical",
-                          "pipeline finished; files=%d" % len(inv["files"]),
-                          time.time() - start_t)
-        print("finalize: %d files, %d dup groups, %d version candidates, %d broken symlinks, "
-              "%d mismatches -> %s" % (
-                  len(inv["files"]), len(dedup["duplicate_groups"]),
-                  len(dedup["version_candidates"]),
-                  len(dedup["aliases"]["broken_symlinks"]),
-                  len(rec.get("mismatches", [])), result_path))
-        return 0
-    except OSError as exc:
-        # write failure or other OS-level problem: preserve skeleton, exit 2
-        try:
-            result = read_json(result_path)
-        except Exception:
-            contract_key, contract = discover_contract(case)
-            if contract is None:
-                contract = default_contract()
-            result = build_skeleton(discover_case_id(case, task_text), "input_error", contract,
-                                    task_title(case, task_text))
-            write_json(result_path, result)
-        result = result or {}
-        result.setdefault("errors", []).append({"path": "<output>", "kind": "os_error", "detail": str(exc)})
-        write_json(result_path, result)
-        print("write_failure: %s" % exc)
-        return 2
+            print(" -", p)
+        raise SystemExit(1)
+    print(f"CHECK OK: {result_path}")
+    return 0
 
 
-def build_parser():
-    p = argparse.ArgumentParser(description="document library repair pipeline")
-    p.add_argument("--case-json", default="/input/case.json")
-    p.add_argument("--task-path", default="/input/task.md")
-    p.add_argument("--input-root", default="/input")
-    p.add_argument("--output-dir", default="/app/output")
-    p.add_argument("--work-dir", default="/app/work")
-    p.add_argument("--result", default=None, help="target result.json (for --update/--check)")
-    p.add_argument("result_arg", nargs="?", default=None,
-                   help="optional positional result.json path (for --check)")
-    p.add_argument("--update", metavar="PATCH.json", default=None)
-    p.add_argument("--check", action="store_true")
-    p.add_argument("--skeleton-only", action="store_true")
-    p.add_argument("--budget", action="store_true")
-    p.add_argument("--max-hash", type=int, default=DEFAULT_MAX_HASH_BYTES)
-    return p
-
-
-def main(argv=None):
-    args = build_parser().parse_args(argv)
-    return run_pipeline(args)
+def main(argv):
+    args = parse_args(argv)
+    if args.help:
+        sys.exit(0)
+    if args.check:
+        do_check(args.check, args.case_json)
+        return
+    if args.update:
+        do_update(args.update, args.result or os.path.join(args.output, "result.json"))
+        return
+    run_pipeline(args)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main(sys.argv[1:])

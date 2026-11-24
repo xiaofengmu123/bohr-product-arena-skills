@@ -1,12 +1,7 @@
-"""main.py - thin entry wrapper (implementation in core_impl.py).
+"""main.py - thin entry wrapper for the library repair skill.
 
-Usage:
-  python3 -B scripts/main.py [--case-json PATH] [--task-path PATH]
-      [--input-root DIR] [--output-dir DIR] [--work-dir DIR]
-      [--skeleton-only | --update patch.json | --check result.json
-       | --search QUERY]
-
-Defaults target the runtime layout: /input, /app/work, /app/output.
+The real implementation lives in core_impl.py so that main.py stays small and
+the entry point is always importable/executable without argument leakage.
 """
 import os
 import runpy
@@ -16,7 +11,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _help():
-    print(__doc__)
+    print(
+        "usage: python -B scripts/main.py [--input DIR] [--output DIR] "
+        "[--work DIR] [--case-json FILE] [--task-path FILE] "
+        "[--skeleton-only] [--update PATCH.json --result RESULT.json] "
+        "[--check RESULT.json --case-json FILE] [--help]"
+    )
 
 
 if __name__ == "__main__":

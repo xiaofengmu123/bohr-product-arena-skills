@@ -1,240 +1,296 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""selftest.py — robustness self-tests for the document library repair skill.
+"""selftest.py — robustness + correctness self-test for the library-repair Skill.
 
-Runs the pipeline in-process against throwaway temporary directories (never
-against ``/input``) and checks the key degradation guarantees:
+Standard library only. Creates disposable temp directories, runs the real
+pipeline against synthetic inputs, and checks graceful degradation for:
 
-  * empty input      -> exit 0, status=insufficient_evidence, valid JSON
-  * malformed JSON   -> recorded, pipeline keeps running
-  * missing case     -> status=input_error
-  * oversized file   -> path/size retained, hash skipped, recorded
-  * bad encoding     -> lossy fallback, recorded
-  * broken symlink   -> alias recorded
-  * normal library   -> duplicate groups + artifacts + --check passes
-  * skeleton-only    -> partial result written early
+  * empty input            -> insufficient_evidence, exit code 0
+  * invalid case.json      -> input_error / recorded error, no crash
+  * missing arguments      -> parser defaults resolve (no crash)
+  * oversized file         -> too_large recorded, no crash
+  * broken symlink         -> recorded, no crash
+  * malformed JSON catalog -> recorded as catalog error, other files processed
+  * non-UTF-8 filename     -> surrogate-safe, no crash
+  * duplicate + version    -> correct groups and chains
+  * determinism            -> two runs identical (modulo timestamps)
 
-Standard library only.  Exit code 0 means all checks passed.
+Exit code 0 = all non-skipped checks pass.
 """
 
 import json
 import os
+import shutil
 import sys
 import tempfile
+import time
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-import core_impl
+import core_impl  # noqa: E402
 
-_FAILURES = 0
-_PASSES = 0
+PASS = 0
+FAIL = 0
+SKIP = 0
 
 
-def check(cond, msg):
-    global _FAILURES, _PASSES
-    if cond:
-        _PASSES += 1
-        print("PASS: " + msg)
+def report(name, ok, note=""):
+    global PASS, FAIL, SKIP
+    if ok is None:
+        SKIP += 1
+        print("SKIP  %-28s %s" % (name, note))
+    elif ok:
+        PASS += 1
+        print("PASS  %-28s %s" % (name, note))
     else:
-        _FAILURES += 1
-        print("FAIL: " + msg)
+        FAIL += 1
+        print("FAIL  %-28s %s" % (name, note))
 
 
-def make_case(setup=None):
-    tmp = tempfile.mkdtemp(prefix="libskill_selftest_")
-    inp = os.path.join(tmp, "input")
-    out = os.path.join(tmp, "output")
-    work = os.path.join(tmp, "work")
-    os.makedirs(inp, exist_ok=True)
-    if setup:
-        setup(inp)
-    return tmp, inp, out, work
+def make_args(input_root, output_dir, case_json, task_path=None, max_hash_bytes=None,
+              skeleton_only=False):
+    return types.SimpleNamespace(
+        case_json=case_json, task_path=task_path or os.path.join(input_root, "task.md"),
+        input_root=input_root, output_dir=output_dir,
+        work_dir=os.path.join(output_dir, "..", "work"),
+        max_hash_bytes=max_hash_bytes if max_hash_bytes is not None else core_impl.DEFAULT_MAX_HASH_BYTES,
+        skeleton_only=skeleton_only, update=None, result=os.path.join(output_dir, "result.json"),
+        check=None,
+    )
 
 
-def run_main(inp, out, work, extra=None):
-    argv = ["--input", inp, "--output", out, "--work", work]
-    if extra:
-        argv += extra
-    code = core_impl.main(argv)
-    result_path = os.path.join(out, "result.json")
-    try:
-        with open(result_path, encoding="utf-8") as fh:
-            result = json.load(fh)
-    except Exception:
-        result = None
-    return code, result, result_path
+def run_pipeline(args):
+    rc = core_impl.run_full(args, time.time())
+    path = os.path.join(args.output_dir, "result.json")
+    with open(path, encoding="utf-8") as f:
+        result = json.load(f)
+    return rc, result
 
 
-def write(path, content, mode="w", encoding="utf-8"):
-    with open(path, mode, encoding=encoding) as fh:
-        fh.write(content)
+def write(path, data, encoding="utf-8", binary=False):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if binary:
+        with open(path, "wb") as f:
+            f.write(data)
+    else:
+        with open(path, "w", encoding=encoding, newline="\n") as f:
+            f.write(data)
 
 
 def test_empty_input():
-    tmp, inp, out, work = make_case()
-    write(os.path.join(inp, "case.json"),
-          '{"case_id": "empty-1", "output_contract": {"answer": null}}')
-    code, result, _ = run_main(inp, out, work)
-    check(code == 0, "empty input exits 0")
-    check(result is not None, "empty input writes valid result.json")
-    check(result.get("status") == "insufficient_evidence",
-          "empty input -> insufficient_evidence (got %r)" % result.get("status"))
-
-
-def test_missing_case():
-    tmp, inp, out, work = make_case()
-    write(os.path.join(inp, "note.txt"), "hello", "w")
-    code, result, _ = run_main(inp, out, work)
-    check(code == 0, "missing case exits 0")
-    check(result.get("status") == "input_error",
-          "missing case -> input_error (got %r)" % result.get("status"))
+    root = tempfile.mkdtemp(prefix="selftest_empty_")
+    out = tempfile.mkdtemp(prefix="selftest_empty_out_")
+    case = os.path.join(root, "case.json")
+    write(case, json.dumps({"case_id": "empty-case", "output_contract": {"files": [], "report": None}}))
+    write(os.path.join(root, "task.md"), "# empty\n")
+    try:
+        rc, result = run_pipeline(make_args(root, out, case))
+        ok = (rc == 0) and (result["status"] == "insufficient_evidence") and result.get("case_id") == "empty-case"
+        report("empty input", ok, "status=%s" % result["status"])
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
 
 
 def test_bad_case_json():
-    tmp, inp, out, work = make_case()
-    write(os.path.join(inp, "case.json"), "{ this is not json", "w")
-    code, result, _ = run_main(inp, out, work)
-    check(code == 0, "bad case.json does not crash (exit 0)")
-    check(result is not None, "bad case.json still writes valid result.json")
+    root = tempfile.mkdtemp(prefix="selftest_badcase_")
+    out = tempfile.mkdtemp(prefix="selftest_badcase_out_")
+    case = os.path.join(root, "case.json")
+    write(case, "{ not valid json ")
+    write(os.path.join(root, "data.txt"), "hello\n")
+    try:
+        rc, result = run_pipeline(make_args(root, out, case))
+        ok = (rc == 0) and (result.get("status") in ("input_error", "partial", "ok")) \
+            and any("bad_json" in e or "json" in e.lower() for e in result.get("errors", []))
+        report("bad case.json", ok, "status=%s errors=%d" % (result["status"], len(result.get("errors", []))))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
 
 
-def test_bad_material_json():
-    tmp, inp, out, work = make_case()
-    write(os.path.join(inp, "case.json"),
-          '{"case_id": "badmat-1", "output_contract": {"answer": null}}')
-    write(os.path.join(inp, "broken.json"), "{ nope", "w")
-    code, result, _ = run_main(inp, out, work)
-    check(code == 0, "bad material JSON does not crash")
-    check(isinstance(result.get("degradations"), list)
-          and len(result["degradations"]) >= 0,
-          "degradations recorded for bad material JSON")
-    check(result.get("status") in ("ok", "partial"),
-          "bad material JSON -> ok/partial, not input_error")
+def test_missing_args_defaults():
+    p = core_impl.build_arg_parser()
+    ns = p.parse_args([])
+    ok = all(getattr(ns, k, None) for k in ("case_json", "input_root", "output_dir"))
+    report("missing args default", ok, "%s | %s | %s" % (ns.case_json, ns.input_root, ns.output_dir))
 
 
 def test_oversized_file():
-    old_cap = core_impl.MAX_HASH_BYTES
-    core_impl.MAX_HASH_BYTES = 32  # force the too_large path cheaply
+    root = tempfile.mkdtemp(prefix="selftest_big_")
+    out = tempfile.mkdtemp(prefix="selftest_big_out_")
+    case = os.path.join(root, "case.json")
+    write(case, json.dumps({"case_id": "big-case"}))
+    write(os.path.join(root, "task.md"), "# big\n")
+    big = os.path.join(root, "big.bin")
+    write(big, b"\x00" * 4096, binary=True)
+    write(os.path.join(root, "small.txt"), "small\n")
     try:
-        tmp, inp, out, work = make_case()
-        write(os.path.join(inp, "case.json"),
-              '{"case_id": "big-1", "output_contract": {"answer": null}}')
-        with open(os.path.join(inp, "big.bin"), "wb") as fh:
-            fh.write(b"x" * 200)
-        code, result, _ = run_main(inp, out, work)
-        check(code == 0, "oversized file does not crash")
-        files = (result.get("computed") or {}).get("files") or []
-        big = [f for f in files if f["path"] == "big.bin"]
-        check(bool(big) and big[0].get("too_large") is True,
-              "oversized file retains path/size and marks too_large")
-        check(big[0].get("sha256") is None,
-              "oversized file skipped for content hash")
+        rc, result = run_pipeline(make_args(root, out, case, max_hash_bytes=10))
+        entries = result["computed"]["inventory"]["files"]
+        big_e = next(e for e in entries if e["path"] == "big.bin")
+        ok = (rc == 0) and (big_e["status"] == "too_large") and (big_e["sha256"] is None)
+        report("oversized file", ok, "status=%s" % big_e["status"])
     finally:
-        core_impl.MAX_HASH_BYTES = old_cap
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
 
 
 def test_broken_symlink():
-    tmp, inp, out, work = make_case()
-    write(os.path.join(inp, "case.json"),
-          '{"case_id": "sym-1", "output_contract": {"answer": null}}')
+    root = tempfile.mkdtemp(prefix="selftest_link_")
+    out = tempfile.mkdtemp(prefix="selftest_link_out_")
+    case = os.path.join(root, "case.json")
+    write(case, json.dumps({"case_id": "link-case"}))
+    write(os.path.join(root, "task.md"), "# link\n")
+    link = os.path.join(root, "broken.pdf")
     try:
-        os.symlink(os.path.join(inp, "does_not_exist.pdf"),
-                   os.path.join(inp, "broken.pdf"))
+        os.symlink(os.path.join(root, "missing_target.pdf"), link)
     except (OSError, NotImplementedError):
-        print("SKIP: symlink creation unavailable on this platform")
+        report("broken symlink", None, "symlink unsupported on this platform")
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
         return
-    code, result, _ = run_main(inp, out, work)
-    check(code == 0, "broken symlink does not crash")
-    aliases = (result.get("computed") or {}).get("aliases") or {}
-    check("broken.pdf" in aliases.get("broken_symlinks", []),
-          "broken symlink recorded as alias")
+    try:
+        rc, result = run_pipeline(make_args(root, out, case))
+        aliases = result["computed"]["aliases"]
+        ok = (rc == 0) and ("broken.pdf" in aliases["broken_symlinks"])
+        report("broken symlink", ok, "broken=%s" % aliases["broken_symlinks"])
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
 
 
-def test_normal_library():
-    tmp, inp, out, work = make_case()
-    write(os.path.join(inp, "case.json"),
-          '{"case_id": "normal-1", '
-          '"output_contract": {"answer": null, "file_list": []}}')
-    os.makedirs(os.path.join(inp, "raw"), exist_ok=True)
-    os.makedirs(os.path.join(inp, "copy"), exist_ok=True)
-    write(os.path.join(inp, "raw", "a.txt"), "same content", "w")
-    write(os.path.join(inp, "copy", "a_v2.txt"), "same content", "w")
-    write(os.path.join(inp, "catalog.csv"),
-          "path,sha256\na.txt,0000\nmissing.csv,\n", "w")
-    code, result, _ = run_main(inp, out, work)
-    check(code == 0, "normal library exits 0")
-    computed = result.get("computed") or {}
-    check(len(computed.get("duplicate_groups", [])) >= 1,
-          "duplicate group detected by content hash")
-    check(computed.get("reconciliation", {}).get("missing_count", 0) >= 1,
-          "catalog reconciliation detects missing entry")
-    # Artifacts exist.
-    for name in ("library_manifest.csv", "directory_tree.txt",
-                 "dedup_version.json", "recovery_report.json",
-                 "library_index.json", "library_manifest.md",
-                 "operation_log.jsonl"):
-        check(os.path.exists(os.path.join(out, name)),
-              "artifact exists: " + name)
-    # All contract fields present.
-    for key in ("answer", "file_list"):
-        check(key in result, "contract field present: " + key)
-    check(result.get("case_id") == "normal-1", "case_id filled")
-    check(result.get("status") in ("ok", "partial"), "status honest")
+def test_bad_json_catalog():
+    root = tempfile.mkdtemp(prefix="selftest_badcat_")
+    out = tempfile.mkdtemp(prefix="selftest_badcat_out_")
+    case = os.path.join(root, "case.json")
+    write(case, json.dumps({"case_id": "badcat-case"}))
+    write(os.path.join(root, "task.md"), "# badcat\n")
+    write(os.path.join(root, "catalog.json"), "{ broken json ")
+    write(os.path.join(root, "good.txt"), "good content\n")
+    try:
+        rc, result = run_pipeline(make_args(root, out, case))
+        ok = (rc == 0) and any("catalog" in e for e in result.get("errors", []))
+        report("malformed JSON catalog", ok, "errors=%s" % result.get("errors"))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
 
 
-def test_check_passes():
-    tmp, inp, out, work = make_case()
-    write(os.path.join(inp, "case.json"),
-          '{"case_id": "check-1", "output_contract": {"answer": null}}')
-    write(os.path.join(inp, "f.txt"), "x", "w")
-    code, result, result_path = run_main(inp, out, work)
-    check(code == 0, "check fixture runs")
-    check_code = core_impl.main(["--check", "--result", result_path,
-                                 "--case-json",
-                                 os.path.join(inp, "case.json")])
-    check(check_code == 0, "--check passes on produced result")
+def test_non_utf8_filename():
+    root = tempfile.mkdtemp(prefix="selftest_enc_")
+    out = tempfile.mkdtemp(prefix="selftest_enc_out_")
+    case = os.path.join(root, "case.json")
+    write(case, json.dumps({"case_id": "enc-case"}))
+    write(os.path.join(root, "task.md"), "# enc\n")
+    bad_name = os.fsencode(root) + b"\\" + b"bad_\xff\xfe_name.txt"
+    try:
+        with open(bad_name, "wb") as f:
+            f.write(b"data\n")
+    except (OSError, ValueError):
+        report("non-utf8 filename", None, "cannot create undecodable name on this platform")
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
+        return
+    try:
+        rc, result = run_pipeline(make_args(root, out, case))
+        ok = rc == 0 and result.get("status") in ("ok", "partial", "insufficient_evidence")
+        report("non-utf8 filename", ok, "status=%s files=%d" % (
+            result["status"], len(result["computed"]["inventory"]["files"])))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
+
+
+def test_dup_and_version():
+    root = tempfile.mkdtemp(prefix="selftest_dup_")
+    out = tempfile.mkdtemp(prefix="selftest_dup_out_")
+    case = os.path.join(root, "case.json")
+    write(case, json.dumps({"case_id": "dup-case", "output_contract": {
+        "manifest": None, "versions": [], "aliases": [],
+    }}))
+    write(os.path.join(root, "task.md"), "# dup\n")
+    write(os.path.join(root, "report_v1.pdf"), "PDF-A")
+    write(os.path.join(root, "report_v2.pdf"), "PDF-B")
+    write(os.path.join(root, "report_final.pdf"), "PDF-B")  # duplicate of v2
+    try:
+        rc, result = run_pipeline(make_args(root, out, case))
+        dup = result["computed"]["duplicate_groups"]
+        chains = result["computed"]["version_candidates"]
+        dup_ok = any(len(v) == 2 for v in dup.values())
+        chain_ok = any(c["stem"] == "report" and len(c["members"]) >= 2 for c in chains.values())
+        contract_ok = all(k in result for k in ("manifest", "versions", "aliases"))
+        ok = rc == 0 and dup_ok and chain_ok and contract_ok
+        report("duplicate + version", ok, "dup_groups=%d chains=%d" % (len(dup), len(chains)))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
+
+
+def strip_volatile(obj):
+    if isinstance(obj, dict):
+        return {k: strip_volatile(v) for k, v in obj.items()
+                if k not in ("runtime", "change_log", "seconds", "started_at", "finished_at", "time")}
+    if isinstance(obj, list):
+        return [strip_volatile(v) for v in obj]
+    return obj
+
+
+def test_determinism():
+    root = tempfile.mkdtemp(prefix="selftest_det_")
+    out1 = tempfile.mkdtemp(prefix="selftest_det1_")
+    out2 = tempfile.mkdtemp(prefix="selftest_det2_")
+    case = os.path.join(root, "case.json")
+    write(case, json.dumps({"case_id": "det-case"}))
+    write(os.path.join(root, "task.md"), "# det\n")
+    write(os.path.join(root, "a.txt"), "alpha")
+    write(os.path.join(root, "b.txt"), "beta")
+    write(os.path.join(root, "sub/c.txt"), "gamma")
+    try:
+        _, r1 = run_pipeline(make_args(root, out1, case))
+        _, r2 = run_pipeline(make_args(root, out2, case))
+        ok = strip_volatile(r1) == strip_volatile(r2)
+        report("determinism", ok, "two runs identical (modulo timestamps)")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out1, ignore_errors=True)
+        shutil.rmtree(out2, ignore_errors=True)
 
 
 def test_skeleton_only():
-    tmp, inp, out, work = make_case()
-    write(os.path.join(inp, "case.json"),
-          '{"case_id": "skel-1", "output_contract": {"answer": null}}')
-    code = core_impl.main(["--input", inp, "--output", out, "--work", work,
-                           "--skeleton-only"])
-    check(code == 0, "skeleton-only exits 0")
-    with open(os.path.join(out, "result.json"), encoding="utf-8") as fh:
-        skel = json.load(fh)
-    check(skel.get("status") == "partial", "skeleton status is partial")
-    check(skel.get("case_id") == "skel-1", "skeleton case_id filled")
-    check("answer" in skel, "skeleton backfills contract field")
-
-
-def test_bad_encoding():
-    tmp, inp, out, work = make_case()
-    write(os.path.join(inp, "case.json"),
-          '{"case_id": "enc-1", "output_contract": {"answer": null}}')
-    with open(os.path.join(inp, "latin.txt"), "wb") as fh:
-        fh.write("caf\xe9".encode("latin-1"))
-    code, result, _ = run_main(inp, out, work)
-    check(code == 0, "bad-encoding file does not crash")
+    root = tempfile.mkdtemp(prefix="selftest_skel_")
+    out = tempfile.mkdtemp(prefix="selftest_skel_out_")
+    case = os.path.join(root, "case.json")
+    write(case, json.dumps({"case_id": "skel-case", "output_contract": {"files": []}}))
+    write(os.path.join(root, "task.md"), "# skel\n")
+    try:
+        args = make_args(root, out, case, skeleton_only=True)
+        rc = core_impl.run_full(args, time.time())
+        with open(os.path.join(out, "result.json"), encoding="utf-8") as f:
+            result = json.load(f)
+        ok = rc == 0 and result["status"] == "partial" and "files" in result
+        report("skeleton-only", ok, "status=%s" % result["status"])
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
 
 
 def main():
-    print("== document library repair selftest ==")
+    print("library-repair selftest")
     test_empty_input()
-    test_missing_case()
     test_bad_case_json()
-    test_bad_material_json()
+    test_missing_args_defaults()
     test_oversized_file()
     test_broken_symlink()
-    test_normal_library()
-    test_check_passes()
+    test_bad_json_catalog()
+    test_non_utf8_filename()
+    test_dup_and_version()
+    test_determinism()
     test_skeleton_only()
-    test_bad_encoding()
-    print("== %d passed, %d failed ==" % (_PASSES, _FAILURES))
-    return 1 if _FAILURES else 0
+    print("-" * 60)
+    print("PASS=%d FAIL=%d SKIP=%d" % (PASS, FAIL, SKIP))
+    return 1 if FAIL else 0
 
 
 if __name__ == "__main__":

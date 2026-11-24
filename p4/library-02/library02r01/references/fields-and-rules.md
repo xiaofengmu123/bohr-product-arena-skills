@@ -1,83 +1,77 @@
-# 字段与规则说明（fields-and-rules）
+# 字段规则与证据溯源规范
 
-本文件描述 Skill 运行时各产物的字段含义、判定规则与定位格式，供 Agent 与他人复核。
+本文件定义 result.json 与证据映射的字段语义，供 Agent 在语义层补充、供他人复核时对照。
 
-## result.json 保留字段
+## 1. result.json 顶层字段
 
-| 字段 | 类型 | 含义 |
+| 字段 | 类型 | 语义 |
 |---|---|---|
-| `case_id` | string | 案例标识，从 case.json 或 task.md 识别，非空 |
-| `status` | enum | `ok \| partial \| insufficient_evidence \| input_error` |
-| `sources` | array | 关键结论的扁平证据列表（item + locator + quote） |
-| `evidence_map` | object | 细粒度证据映射，见下 |
-| `uncertainty` | array | `{item, severity, reason}` |
-| `pending_human` | array | 需人工确认项 |
-| `change_log` | array | `{time, actor, step, detail}` |
-| `errors` / `degradations` | array | 失败与降级，`{item, kind, detail}` |
-| `runtime` | object | python 版本、skill 版本、时间戳、耗时、路径、大小上限 |
-| `limitations` | array | 已知边界与依赖 |
-| `computed` | object | 机械证据（files/summary/duplicate_groups/version_candidates/version_notes/aliases/reconciliation/answers/index/artifacts） |
+| `case_id` | string | 案例标识，取自 case.json 的 `case_id`/`id`/`challenge_id`，非空 |
+| `status` | enum | `ok` / `partial` / `insufficient_evidence` / `input_error` |
+| `<contract 字段>` | any | 题目 output_contract 全部字段原样回填，缺值 `null`/`[]` |
+| `sources` | list | 关键结论证据（item/locator/quote），由 evidence_map 聚合 |
+| `uncertainty` | list | `{item, reason, severity}` |
+| `change_log` | list | `{time, actor, step, detail}`，UTC ISO 时间 |
+| `errors` | list | 硬性失败（lstat 失败、根目录缺失、不可读） |
+| `degradations` | list | 降级处理（too_large/non_regular/symlink/坏编码/坏 JSON） |
+| `runtime` | object | `{seconds, files, dirs, evidence_count}` |
+| `limitations` | list | 已知限制（哈希上限、版本链启发式、语义检索为候选层） |
+| `pending_human` | list | 需人工确认项 |
+| `computed` | object | 全部机械证据与产物引用 |
+| `artifacts` | object | 产物相对路径映射 |
 
-## output_contract 回填规则
+## 2. output_contract 回填规则
 
-- 从 case.json 的 `output_contract` / `output` / `result_schema` / `contract` 自动识别。
-- 全部字段**原样回填到 result.json 顶层**，缺值按 schema 类型给 `""`/`null`/`[]`/`{}`；
-  不改名、不删未知键。
-- 与保留字段同名时，改存 `computed._contract_<字段>`。
-- 无 contract 时，仅产出元数据字段，并在 `uncertainty` 标注 `output_contract` 缺失。
+1. 自动识别键名：`output_contract`/`output`/`result_schema`/`contract`/
+   `output_schema`/`result_contract`/`required_fields`。
+2. 遍历 contract 结构，leaf 字段按点路径重建嵌套；缺值给 `null`，list 类型给 `[]`。
+3. 按子串匹配映射到 computed 值：manifest/inventory/files→files，directory_tree→
+   directory_tree，duplicates/dedup→duplicate_groups，versions→version_candidates，
+   aliases→aliases，reconciliation/recovery→reconciliation，index→index，
+   answers→answers，summary/report→summary，evidence_map→evidence_map。
+4. 无法映射的字段给 `null`，不删键、不改名；与保留键冲突时写 `computed._contract_<字段>`。
 
-## 判定规则
+## 3. evidence_map 条目（本版重点）
 
-- **去重**：只按文件内容 SHA-256 判定；文件名相同但内容不同不算重复。
-- **版本候选**：归一化主干（剥离 `v1`/`_rev2`/`副本`/`final` 等版本 token 后的小写
-  主干）相同，且组内至少 2 个文件，按 `difflib.SequenceMatcher` 计算内容相似度；
-  **始终标 `heuristic: true`**，由 Agent 结合版本说明定稿。
-- **别名**：`os.readlink` 得符号链接目标（含断链）；`(st_dev, st_ino)` + `st_nlink>1`
-  得硬链接组。
-- **对账**：目录清单（JSON/CSV/Markdown 表/BibTeX/RIS/SQLite）中的 path/hash 与
-  实际盘点比对，产出 `matches / mismatches / missing / orphaned`。
+每条结论一条目，字段语义：
 
-## 定位格式（locator）
+| 字段 | 语义 |
+|---|---|
+| `id` | `ev-0001` 起递增，稳定可引用 |
+| `kind` | `file_identity`/`directory`/`dedup`/`version`/`alias`/`registry`/`reconciliation`/`answer` |
+| `claim` | 自然语言结论，含具体数值/路径 |
+| `method` | 产生结论的方法：`sha256`/`normalized_stem+similarity`/`readlink`/`st_ino`/`registry_parse`/`registry_reconcile`/`inventory_count` 等 |
+| `locator` | 相对路径（正斜杠），可追加 `#p页码` 或 `#L行号` |
+| `quote` | 逐字片段，或机器可复算值（`sha256=<hex>`、`target=<...>`、`inode=<n>`、`stem=<...> relation=<...>`、`entries=<n>`） |
+| `confidence` | `high`（内容哈希/文件系统事实）/`medium`（启发式/机械问答） |
+| `basis` | 证据依据：`content_hash`/`filesystem_walk`/`heuristic`/`parse_result`/`path+hash_comparison`/`mechanical_computation` |
+| `conflicts` | 对立 evidence id 列表；无冲突为 `[]` |
 
-- 文本/抽取文本：`相对路径#L12`（第 12 行）；无行号时 `相对路径#o偏移`。
-- PDF：`相对路径#p3`（物理页，需文本层；无文本层不编造页码）。
-- `quote` 为定位处的逐字子串；`quote_span` 为该子串在抽取文本中的 `[起,止)` 字符区间；
-  `source_sha256` 为产生该 quote 的文件内容 SHA-256。
+### quote 规范
 
-## evidence_map 结构
+- 允许两类：**逐字原文片段**（不改写、不概括）；**可复算值**（哈希、链接目标、
+  inode、模式串、归一化主干）。
+- 哈希类 quote 必须完整 64 位十六进制，不允许截断。
+- 文本类 quote 超出 300 字符用 `…` 截断并在 claim 中保留关键数值。
 
-```json
-{
-  "conclusions": [
-    {
-      "id": "C0001",
-      "claim": "…结论陈述…",
-      "type": "inventory|duplicate|version|version_note|alias|reconciliation|answer",
-      "verdict": "verified|inferred|conflict|unverified",
-      "status": "ok|partial|…",
-      "confidence": "high|medium|low",
-      "method": "…判定方法…",
-      "locators": [
-        {
-          "locator": "materials/protocol.txt#L1",
-          "quote": "缓冲液配方: 10 mM Tris, pH 8.0",
-          "quote_span": [0, 30],
-          "source_file": "materials/protocol.txt",
-          "source_sha256": "…64位十六进制…",
-          "page": null,
-          "line": 1
-        }
-      ]
-    }
-  ]
-}
-```
+### 冲突不隐藏
 
-## 文本抽取方法（脚本内置，纯标准库）
+同一指标（如某文件的哈希）在两个来源不一致时：
+1. 两个来源各生成一条 evidence_map 条目；
+2. 在 `conflicts` 中互相列出对方 id；
+3. 顶层 `uncertainty` 增加一条 `severity=high` 的 `source_conflict` 记录。
 
-- 文本类：`utf-8-sig → utf-8 → gb18030 → latin-1` 容错，坏编码标 `bad_encoding`。
-- PDF：naive `stream/endstream` + zlib 解压 + `Tj/TJ` 文本算子；失败标
-  `pdf_no_text_layer` / `pdf_parse_error`，由 Agent 调用平台 pdf-text-tool 补抽。
-- Office（docx/xlsx/pptx）：ZIP 容器内 XML 提取文本。
-- 归档（zip/tar/gz…）：跳过内容，标 `archive_skipped`。
-- 超大文件（>2 MiB）：跳过内容哈希，保留路径/大小/权限，标 `too_large`。
+## 4. 版本链与对账的判定规则
+
+- 归一化主干：小写、去扩展名、去除版本/副本/日期 token
+  （`v1/v2/ver/rev/draft/final/copy/副本/修订/终稿/2024-01-02` 等）。
+- 相似度：文本文件用 `difflib.SequenceMatcher` 对 token 序列计算 ratio；二进制文件
+  仅按大小分组并标 `binary_size`；同哈希标 `duplicate`。
+- 对账：注册路径与真实路径归一化后比对；注册哈希仅当为 64 位十六进制时与 SHA-256
+  比对，否则标 `hash_note` 跳过验证，不误报 mismatch。
+
+## 5. 诚实性底线
+
+- 材料缺失、哈希无法计算、注册哈希算法不一致、版本链无法确认，都必须显式记录，
+  禁止编造文件内容、哈希、元数据、DOI 或运行结果。
+- `status` 只依据实际缺口判定，不因"想得高分"而写 `ok`。

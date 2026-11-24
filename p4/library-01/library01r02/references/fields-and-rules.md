@@ -1,89 +1,68 @@
-# 字段字典与处理规则
+# 字段字典与判定规则（与 scripts 行为一致）
 
-本文件是 `scripts/core_impl.py` 的配套说明，供 Agent 复核语义结论、二次补录与撰写 `sources`/`uncertainty` 时使用。所有脚本字段、判定规则与降级码以本文件为准；冲突时以真实源文件内容为准。
+## 1. result.json 顶层字段
 
-## 1. 结果主字段（result.json）
-
-| 字段 | 类型 | 含义与填写规则 |
+| 字段 | 类型 | 说明 |
 |---|---|---|
-| `case_id` | string | 从 case.json 的 `case_id`/`id`/`challenge_id` 或 task.md 提取；不得为空 |
-| `status` | enum | `ok` / `partial` / `insufficient_evidence` / `input_error` |
-| `sources` | list | 每个关键结论一条：`{item, locator, quote}`，quote 必须逐字 |
-| `uncertainty` | list | 不确定项：`{item, reason, severity}`，severity 用 `high/medium/low` |
-| `pending_human` | list | 需要人工补录或裁决的事项 |
-| `change_log` | list | `{time, actor, step, detail}`，append-only 时间线 |
-| `errors` / `degradations` | list | 逐条异常；不能静默跳过 |
-| `runtime` | object | 预算、阶段耗时、时间戳；机械证据不得依赖其数值 |
+| `case_id` | string | 从 case.json 的 `case_id`/`caseId`/`id`/`challenge_id` 识别 |
+| `status` | string | `ok`/`partial`/`insufficient_evidence`/`input_error` |
+| `<contract 字段>` | any | `output_contract` 原样回填；保留名冲突转 `computed._contract_<字段>` |
+| `sources` | array | `{item, locator, quote}` 证据溯源 |
+| `uncertainty` | array | `{item, reason, severity}` 不确定项 |
+| `pending_human` | array | `{item, detail}` 需人工确认项 |
+| `change_log` | array | `{time, actor, step, detail}` 操作时间线 |
+| `errors` | array | `{code, path, detail}` 可恢复错误 |
+| `degradations` | array | `{code, path, detail}` 降级/跳过项 |
+| `runtime` | object | `wall_seconds`、`request_budget`、`request_budget_seconds` |
+| `limitations` | array | 方法边界说明 |
 | `computed` | object | 全部机械证据（见下） |
+| `artifacts` | array | `{path, kind, role}` 产物清单 |
 
 ## 2. computed 子结构
 
-- `files`：逐文件记录 `path/type/size/mtime/mode/sha256/md5/hash_status/hash_note`。
-- `summary`：`counts`（files/dirs/entries/total_bytes/symlinks/broken_symlinks/hash_errors）与 `extensions` 计数。
-- `inventory`：`entries`（含目录）、`dirs`。
-- `duplicate_groups`：按内容 SHA-256 分组，`n>1` 才入组，`paths` 升序。
-- `version_candidates`：按"归一化主干 + 扩展名"分组，`n>1` 才入组；每组按 mtime 升序给 `order/label`，`heuristic=true`。
-- `version_notes`：从版本说明类文本文件解析的 `vA -> vB` 转移记录，含逐字 `quote` 与行号。
-- `aliases`：`symlinks`、`broken_symlinks`、`hardlink_groups`（按 `(st_dev, st_ino)` 聚合）。
-- `catalogs`：每个库目录文件的解析结果与错误。
-- `reconciliation`：`matches/mismatches/missing/orphaned` 四类及计数。
-- `answers`：机械问答（计数、重复、断链、版本、按文件名抽取的年份/作者，标注启发式）。
-- `index`：可检索索引，`path/name/ext/size/mtime/sha256/keywords`。
+- `files` / `inventory`：文件记录（`path/type/size/mtime/mode/sha256/
+  hash_status/target/link_status/inode/dev`）。
+- `summary`：文件数、目录数、已哈希数、重复组数、版本候选数、符号链接数、断链数、
+  硬链接组数、对账四类计数。
+- `duplicate_groups`：`{sha256, count, paths, evidence}`，按内容 SHA-256 分组。
+- `version_candidates`：`{normalized_stem, heuristic, members[], replaces_chain,
+  note}`。
+- `version_notes`：`{source, line, raw, heuristic}` 行政版本说明逐字抽取。
+- `aliases`：`{symlinks[], hardlink_groups[]}`（含断链）。
+- `reconciliation`：`{matches, mismatches, missing, orphaned, summary}`。
+- `catalogs`：识别到的库目录文件及其条目数。
+- `index`：可检索索引（盘点记录 + 库目录记录合并）。
+- `answers`：机械问答 `{question_key, answer, evidence}`。
 
-## 3. 判定规则
+## 3. 哈希与降级规则
 
-### 3.1 去重
+- 内容哈希用 SHA-256，默认单文件上限 2 MiB（`--max-hash-bytes` 可调）。
+- `hash_status` 取值：`ok` / `too_large` / `unreadable` / `symlink` /
+  `non_regular` / `stat_error`；降级时保留路径、大小、权限与链接目标，不伪造哈希。
+- 遍历 `os.walk` 后对目录与文件名做稳定排序，无随机数，重复运行除时间戳外一致。
 
-- 判定键 = 内容 `sha256`，绝不按文件名。
-- 文件大小 > 2MB（`HASH_CAP_BYTES`）跳过内容哈希，`hash_status=too_large`，不计入重复组。
-- 不可读/非常规文件保留路径、大小、权限与链接目标，记录 `unreadable`/`non_regular`。
+## 4. 版本与别名启发式
 
-### 3.2 版本候选
+- 版本：文件名归一化去 `v1/v2/final/draft/日期/副本` 等后缀，同主干按修改时间升序
+  给出候选链；该结果为**启发式**，在 `uncertainty` 标注并要求人工确认。
+- 别名：符号链接（含断链）与硬链接组（`dev+inode` 相同且同哈希）；断链记录
+  `link_status=broken`。
+- 行政版本说明：对 task.md/case.json 及 versions/changelog 类文件做关键字逐字抽取，
+  不进行语义对齐，避免把猜测当成事实。
 
-1. 去掉扩展名后做小写归一化：去除 `v1/v1.0/rev/draft/final/copy/副本/修改/备份` 等标记、括号与分隔符，得到语义主干。
-2. 按 `(语义主干, 扩展名)` 分组，成员 ≥2 才生成候选链。
-3. 组内按 mtime 升序标 `v1..vn`；`unique_content_hashes` 表示实际内容差异数。
-4. **一律标 `heuristic=true`**；最终"谁替代谁"由 Agent 结合版本说明与内容 diff 确认后写入 patch。
+## 5. 对账判定
 
-### 3.3 别名
+- 库目录（JSON/CSV/BibTeX/RIS/SQLite）声明的条目按 `path`/`file`/`L1` 等键定位，
+  与盘点比对：路径存在且哈希一致 → `matches`；路径存在但哈希不一致 →
+  `mismatches`；路径不存在 → `missing`；盘点有而目录未声明 → `orphaned`。
+- 哈希不一致同时保留声明值与实际值，供复跑核对。
 
-- 符号链接：`os.lstat` 判断，`link_target` 记录目标，`link_exists=false` 即断链。
-- 硬链接：`st_nlink>1` 且 `(st_dev, st_ino)` 相同者聚合为一组。
+## 6. 状态判定顺序
 
-### 3.4 恢复对账
+1. case.json 缺失/不可读 → `input_error`。
+2. 无任何文件 → `insufficient_evidence`。
+3. 存在 `errors` 或 `degradations` → `partial`。
+4. 其余 → `ok`。
 
-- 库目录格式：JSON / CSV / BibTeX / RIS / SQLite（`catalog.json/csv/bib/bibtex/ris/sqlite/sqlite3/db`）。
-- 每条目录记录取路径字段（`path/file/filename/filepath/name/relative_path/relpath/entry/id`）。
-- `matches`：路径命中实际文件且 size/hash 一致；`mismatches`：路径命中但 size 或 sha256/md5 不一致；`missing`：路径未命中实际文件；`orphaned`：实际文件未被任何目录记录认领。
-- hash 比对：64 位十六进制按 sha256 比，32 位按 md5 比；`checksum/hash/sha` 依长度自动选择。
-
-### 3.5 索引
-
-- `keywords` 按文件名中的字母数字与 CJK 连续段拆分（小写）。
-- 索引与 `library_index.json` 可直接用于常见检索问答（计数、重复、缺失、断链、版本、作者/年份启发式）。
-
-## 4. 降级码
-
-| 码 | 含义 | 处置 |
-|---|---|---|
-| `too_large` | 超过 2MB 哈希上限 | 保留元数据，跳过 sha256/md5 |
-| `unreadable` | 权限不足或 IO 错误 | 记录路径与原因，继续 |
-| `symlink` | 符号链接 | 记录目标与是否存在，不跟随 |
-| `non_regular` | FIFO/socket 等 | 保留类型，不做内容哈希 |
-| `bad_json` | 库目录 JSON 解析失败 | 记录错误，继续其余材料 |
-| `csv_parse_error` | CSV 解析失败 | 同上 |
-| `sqlite_open_error` / `sqlite_query_error` | SQLite 打不开/坏表 | 记录，继续 |
-| `stat_failed` | stat 失败 | 记录路径与异常 |
-
-## 5. 预算与早落盘（本版强化点）
-
-- 总预算 900 秒 / 64 次模型请求，脚本读写不计入请求。
-- 阶段预算：骨架 ≤3 分钟（必须最先落盘 partial）；盘点 ≤2 分钟；语义归位 6–8 分钟；证据与复核 ≤2 分钟；定稿收尾。
-- 每步结束通过 `--update patch.json --result ...` 增量落盘；`result.json` 任一时刻都可解析。
-- `runtime.budget` 记录 `total_seconds/model_requests/phase/elapsed_s/requests_estimate`；`phase_times_s` 记录各脚本阶段真实耗时，供 Agent 判断剩余预算。
-
-## 6. 证据与诚实标注
-
-- `sources` 只接受逐字 `quote`；无原文处写 `not_reported` 或入 `pending_human`。
-- 冲突来源全部记录并标 `source_conflict`，不隐藏。
-- 缺失软件状态、科学数据、哈希、DOI 一律不编造。
+Agent 在阶段 2 可依据语义修正 `status` 与各判定，但必须同步更新 `sources` 与
+`change_log`。

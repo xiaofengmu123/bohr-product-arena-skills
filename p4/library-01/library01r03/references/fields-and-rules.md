@@ -1,72 +1,100 @@
-# 字段字典与判定规则（fields-and-rules）
+# 字段字典与规则（fields-and-rules）
 
-本文件是脚本实现与人工复核共享的单一事实源。脚本与本文不一致时以脚本实际输出为准，
-并在 `uncertainty` 中说明。
+本文件定义 Skill 产物的字段、命名规范化、版本判定、契约回填与降级标记，供他人复核与复用。
 
-## 1. result.json 保留字段
+## 1. `result.json` 字段字典
 
-| 字段 | 类型 | 含义 |
-|---|---|---|
-| `case_id` | string | 案例标识，优先取 case.json 的 `case_id`/`id`/`challenge_id`/`caseId`，其次从 task.md 匹配 challenge id |
-| `status` | enum | `ok \| partial \| insufficient_evidence \| input_error`，诚实标注 |
-| `sources` | list | 关键结论证据：`{item, locator, quote}`，quote 为逐字片段 |
-| `uncertainty` | list | 不确定项：`{item, reason, severity}` |
-| `change_log` | list | 操作时间线：`{time, actor, step, detail}` |
-| `errors` / `degradations` | list | 处理失败 / 降级记录，绝不静默 |
-| `runtime` | object | 引擎版本、时间戳、输入输出路径、大小上限；`generated_at` 为易变字段 |
-| `limitations` / `pending_human` | list | 边界限制 / 待人工确认项 |
-| `computed` | object | 机械证据汇总：`files`/`summary`/`inventory`/`duplicate_groups`/`version_candidates`/`version_notes`/`aliases`/`reconciliation`/`answers`/`index`/`artifacts` |
-| `artifacts` | object | 可编辑产物名 → 绝对路径 |
+| 字段 | 类型 | 说明 |
+|-|-|-|
+| `case_id` | string | 案例标识，从 case.json 的 `case_id`/`caseId`/`id`/`challenge_id` 或 task.md 的 `challenge-*` 识别 |
+| `status` | enum | `ok` / `partial` / `insufficient_evidence` / `input_error`，诚实标注 |
+| `sources` | array | 关键结论证据，元素 `{item, locator, quote}` |
+| `uncertainty` | array | 不确定项，元素 `{item, severity, reason}` |
+| `pending_human` | array | 需人工补录/判断的缺口 |
+| `errors` | array | 处理中遇到的错误，元素含 `path`/`kind`/`detail` |
+| `degradations` | array | 降级处理记录（含写盘失败） |
+| `runtime` | object | `started_at`/`elapsed_seconds`/`python`/`platform`/`argv`（唯一非确定字段） |
+| `limitations` | array | 能力边界与未覆盖项 |
+| `change_log` | array | 时间线，元素 `{time, actor, step, detail}` |
+| `computed` | object | 机械证据：`summary`/`files`/`inventory`/`duplicate_groups`/`version_candidates`/`version_notes`/`aliases`/`reconciliation`/`catalogs`/`index`/`answers`/`_contract` |
+| `artifacts` | object | 产物名 → 输出目录内相对路径 |
 
-## 2. output_contract 回填规则
+## 2. 逐文件清单（library_manifest.csv）列
 
-- 在 case.json / task.md 中自动识别键名 `output_contract` / `output` / `result_schema` / `contract`；
-  识别不到时从 task.md 的 fenced ```json 块尝试解析。
-- 契约的**全部字段原样回填**到 result.json 顶层：缺值给 `null` / `[]`，不改名、不删未知键。
-- 契约字段与保留字段重名时，改存 `computed._contract_<字段>`，不覆盖保留字段。
-- 契约缺失：result.json 仍合法，`uncertainty` 标 `output_contract` 缺失，`status` 至少为 `partial`。
+`rel_path, type, size, mtime, sha256, encoding, mode_octal, nlink, inode, link_target, content_note`
 
-## 3. 文件清单（library_manifest.csv）字段
+- `type`：`file` / `dir` / `symlink` / `broken_symlink` / `other` / `unknown`。
+- `content_note`：`too_large` / `unreadable` / `non_regular` / `broken_symlink` / `unhashed` / `symlink_ok`，无异常为 `null`。
+- `encoding`：`text` / `binary` / `undecodable`，非常规文件为 `null`。
 
-`path`（相对 /input 的正斜杠路径）、`type`（file/directory/symlink/non_regular）、
-`role`（pdf/markdown/text/csv/json/…/control）、`size_bytes`、`mtime`、`mode`（八进制权限）、
-`sha256`、`status`、`note`、`link_target`。目录项无哈希与大小。
+## 3. 目录树（directory_tree.txt）约定
 
-## 4. 内容哈希与去重
+- 以 `rel_path` 为树结构，子项按 `(casefold, raw)` 排序。
+- 目录以 `/` 结尾；空目录下一行标 `[空目录]`。
+- 符号链接标 `-> target`；断链额外标 `[断链]`。
 
-- SHA-256 流式读取，单文件上限 `MAX_CONTENT_BYTES=2MB`；超限跳过哈希并记 `too_large`，路径/大小/权限/链接目标仍保留。
-- 去重按 `sha256` 分组，组内路径排序；同名不同内容**不**视为重复。
-- 重复组写入 `duplicate_groups`（含 sha256 前缀、路径列表、count）与 `dedup_version.json`。
+## 4. 去重规则
 
-## 5. 版本候选（启发式，非真值）
+- 仅对 `type=file` 且成功计算 SHA-256 的文件分组；分组键为 `(sha256, size)`。
+- 组内成员 ≥ 2 才记为重复组；绝不按文件名判断。
 
-- 归一化主干：去扩展名、小写；匹配 `name_v1.2` / `name-rev3` 等模式后取主干。
-- 同主干 ≥2 个文件 → 候选版本链，按路径排序并标注 `method=normalised_stem_heuristic`。
-- 版本链是候选而非定论，与行政版本说明（version_notes）对齐后由 Agent 在语义层确认。
+## 5. 版本链规则（启发式，标注 `heuristic: true`）
 
-## 6. 别名识别
+- 主干归一化：取 basename 去扩展名 → 小写 → 非字母数字/中文替换为空格 → 移除 `v|ver|version|rev` + 数字、`final|draft|copy|backup|old|new` 等词 → 合并空白。
+- 归一化主干相同的 ≥ 2 个文件组成候选组；按 `mtime` 升序排列成链，记录 `superseded_by`/`supersedes`。
+- 相邻版本用 `difflib.SequenceMatcher` 计算 `lines_added`/`lines_removed`/`similarity_ratio`（文本 ≤ 2MB，否则 `diff: null`）。
 
-- 符号链接：`os.readlink` 取目标，目标不存在记为 `broken_symlink`。
-- 硬链接：按 `(st_ino)` 分组，`st_nlink>1` 的路径聚成硬链接组。
-- 全部写入 `aliases`，断链计入 `answers.broken_symlink_count`。
+## 6. 别名规则
 
-## 7. 库目录解析与恢复对账
+- 硬链接组：`nlink > 1` 且 `(st_dev, st_ino)` 相同的文件为一组。
+- 符号链接：记录 `target` 与 `broken`（`os.stat` 失败即断链）。
 
-- 支持 JSON（dict 或 `{"items":[...]}` 列表）、CSV（DictReader，退化到裸行）、BibTeX（@entry 的 key 与 fields）、RIS（TY/ER 分段）、SQLite（只读 `sqlite_master` 表清单，逐表最多 500 行）。
-- 对账以条目里的 `path`/`file`/`filename`/`name` 与实际文件相对路径匹配；`sha256`/`hash` 字段用于 mismatch 判定。
-- 输出四类：`matches`（路径匹配且哈希一致或未给哈希）、`mismatches`（哈希不符）、`missing`（清单有而实际无）、`orphaned`（实际有而清单无，排除 control 文件）。
-- SQLite 打不开 / 坏表记 `sqlite_open_error` / `sqlite_query_error`，不崩溃。
+## 7. 行政版本说明解析
 
-## 8. 确定性规则（本变体重点）
+扫描 `.md/.txt/.rst/.yaml/.yml/.json`，逐行匹配：
 
-- 所有遍历用排序后的 `dirnames`/`filenames`；JSON 用 `sort_keys=True`；无随机数。
-- 相对路径统一为正斜杠；`answers`/`index` 的列表与字典键均排序。
-- 唯一易变字段是 `generated_at` 与 `change_log`/`operation_log` 的 `time`，由 `selftest.py` 规范化后比较。
-- 目录树文本由排序后的路径稳定生成，深度上限 `MAX_TREE_DEPTH=12`，空目录标 `[空目录]`。
+- 版本号：`(?i)version\s*[:=]?\s*(v?\d+(?:\.\d+)+...)` → kind `version`。
+- 替代声明：`supersede|replace|deprecate|obsolete` → kind `supersede`。
+- 日期：`20xx-yy-zz` 且行内含版本关键词 → kind `date`。
 
-## 9. 失败与降级
+每条输出 `{source, line, kind, value, quote}`。
 
-- 空输入 → `insufficient_evidence`；缺 case.json / 坏 JSON → `input_error`；两者都退出码 0，不抛异常。
-- 文件不可读 / 坏编码 / 超大 / 非常规 / 符号链接：跳过内容哈希但保留可观察元数据，逐条记录。
-- 写盘失败：先落骨架，退出码 2；禁止在错误后留下空产物。
-- 缺失信息一律 `not_reported` / `pending_human`，禁止编造哈希、DOI、数值或文件内容。
+## 8. 库目录解析与对账
+
+| 格式 | 解析方式 |
+|-|-|
+| JSON | 数组/对象递归展开为记录，附 `_source`/`_index` |
+| CSV/TSV | `csv.DictReader`，每行一条记录 |
+| BibTeX | 正则提取 `@type{key, fields}` 与 `key = {value}` 字段 |
+| RIS | `TY` 起始记录，`TI/AU/PY/DO/JO` 映射字段 |
+| SQLite | `sqlite_master` 列出表，`SELECT * LIMIT 200` 取列与行 |
+
+对账输出四类：`matches`（记录文件名命中文件 basename）、`mismatches`（记录带路径但文件不存在）、`missing`（记录无对应文件）、`orphaned`（文件未被任何记录引用）。文件名匹配键优先级：`file/filename/path/name/title/attachment/file_path/source/fulltext/pdf`。
+
+## 9. 契约回填规则
+
+- 契约键识别顺序：`output_contract` / `output` / `result_schema` / `contract`。
+- 契约可为 dict（含 `properties`/`fields` 或直接字段名）或 list（字符串或 dict）。
+- 每个字段缺省值：类型 `array` → `[]`，`object` → `{}`，其余 → `null`。
+- 与保留键冲突的契约字段改存 `computed._contract_<字段>`；契约原始体存 `computed._contract`。
+
+## 10. 降级标记字典
+
+| kind | 含义 |
+|-|-|
+| `too_large` | 超过内容哈希/文本上限，跳过内容处理 |
+| `unreadable` | 打开/读取失败 |
+| `non_regular` | FIFO/socket/设备等非常规文件 |
+| `symlink` / `broken_symlink` | 符号链接 / 断链 |
+| `bad_encoding` | 文本无法以 utf-8/cp1252 解码 |
+| `bad_json` | JSON 解析失败 |
+| `missing` | case.json 等缺失 |
+| `scandir_error` / `stat_error` | 目录遍历或元数据读取失败 |
+| `sqlite_open_error` / `sqlite_query_error` | SQLite 打不开或查询失败 |
+| `write_failed` | 产物写盘失败（保留骨架，退出码 2） |
+
+## 11. 确定性保证
+
+- 全部遍历与字典键按 `(value.casefold(), value)` 稳定排序；无随机数、无多线程。
+- `computed` 只依赖输入树与固定常量；`runtime` 与 `change_log[*].time` 为唯一时间戳位置。
+- `scripts/selftest.py` 归一化时间戳后比对两次运行的全部产物，用于交付前验证。

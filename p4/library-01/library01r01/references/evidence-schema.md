@@ -1,105 +1,69 @@
-# evidence_map 结构与证据规范
+# 证据溯源规范（evidence_map schema）
 
-本 Skill 的核心差异点是细粒度证据溯源：`result.json` 顶层 `evidence_map` 与独立文件
-`/app/output/evidence_map.json` 同步记录每条结论的可复核证据。
+本包相对常规"文件整理"方案的取舍是 **证据溯源强化**：不是只在结果里给一个
+扁平 `sources` 数组，而是把每条结论都落到一个细粒度的 `evidence_map`，且每条
+结论至少带一个 `locator + 逐字 quote`。判断依据可独立复核，冲突不隐藏。
 
-## 1. 顶层结构
+## 1. 结构与字段
 
-```json
-{
-  "evidence_map": {
-    "version": "1.1",
-    "count": 23,
-    "claims": [ { "claim_id": "...", "...": "..." } ]
+`result.json` 顶层同时保留两个视图：
+
+- `sources`：扁平视图，供快速检索；每项 `{item, locator, quote, role}`，
+  其中 `item` 是所属结论的 `id`。
+- `evidence_map`：结构化视图，`conclusions` 按类别键控，`id` 稳定可引用。
+
+```jsonc
+"evidence_map": {
+  "schema_version": "1.0",
+  "conclusions": {
+    "dedup.0": {
+      "id": "dedup.0",
+      "claim": "按内容 SHA-256 判定 2 个文件重复",
+      "strength": "established",
+      "kind": "dedup",
+      "method": "content_sha256",
+      "evidence": [
+        {"locator": "input/a.pdf", "quote": "sha256=…, 2 members", "role": "basis"}
+      ],
+      "uncertainty": null
+    }
   }
 }
 ```
 
-- `version`：evidence_map 结构版本。
-- `count`：claims 数量。
-- `claims`：结论数组，每个元素是一"条"结论及其证据。
-
-## 2. claim 字段
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `claim_id` | string | 唯一编号，形如 `<claim_type>-NNNN`，如 `duplicate_group-0001` |
-| `claim_type` | string | 结论类型：`duplicate_group` / `version_candidate` / `alias` / `version_note` / `catalog_record` / `reconciliation` / `answer` / `artifact_mapping` |
-| `statement` | string | 用一句话陈述结论内容 |
-| `conclusion_ref` | string | 指向 `computed` 中承载该结论的字段，如 `computed.duplicate_groups[0]` |
-| `confidence` | string | `high` / `medium` / `low` |
-| `heuristic` | bool | 是否由启发式得到（版本链、字段映射通常为 true） |
-| `basis` | string[] | 支撑该结论的方法/依据，如 `["content_sha256"]`、`["stem_normalization","mtime_order","content_diff"]` |
-| `sources` | object[] | 证据列表，见下 |
-| `source_conflicts` | object[] | 冲突来源，同一指标不一致时全部保留并标注 |
-
-## 3. source 字段
-
-每条 source 至少包含：
+## 2. 字段含义
 
 | 字段 | 说明 |
 |---|---|
-| `locator` | 材料定位，见 locator 语法 |
-| `quote` | 逐字原文或规范化测量串（禁止为空，除非确有具体依据） |
-| `quote_sha256` | `quote` 的 SHA-256（UTF-8），用于复跑核对 |
-| `evidence_type` | `verbatim` / `computed_derivation` / `derived_regex` / `parsed_field` |
-| `role` | `subject`（被判定对象）/ `support`（辅助证据） |
+| `id` | 稳定结论编号，前缀为类别（inventory/dedup/version/alias/version_note/reconcile/index/answer） |
+| `claim` | 用一句陈述表达结论，强度由 `strength` 标注 |
+| `strength` | `established`（机械可复现的事实）/ `preliminary`（启发式或初步推断）/ `inferred` |
+| `kind` | 结论类别 |
+| `method` | 判定方法，如 `content_sha256`、`normalized_stem + mtime + content_similarity` |
+| `evidence` | 证据数组，每项含 `locator`、`quote`、`role` |
+| `uncertainty` | 该结论具体的不确定来源，非"总有一句风险声明"的空话 |
 
-### evidence_type 语义
+## 3. locator 与 quote 的约定
 
-- `verbatim`：quote 为材料中的**逐字原文**。
-- `computed_derivation`：quote 为规范化测量串（如 `sha256:31ea…`、`dev:1;inode:42`、
-  `stat:mtime=2024-01-01T00:00:00Z`）。这类结论没有"逐字原文"，用可复算的测量值代替，不冒充原文。
-- `derived_regex`：quote 为正则命中的**原文片段**（如文件名中的 `_v2` 或版本说明行中的 `v2`）。
-- `parsed_field`：quote 为结构化源文件中解析出的**字段原文**（如 catalog.json 的 `path` 字段值）。
+- `locator` 是能指回源材料的定位：文件相对路径（POSIX 分隔符，如
+  `input/data/report_v1.txt`）、`computed.inventory` 等机械证据定位，或
+  目录清单中的记录定位。
+- `quote` 是**逐字**片段：文本文件取首行原文（≤400 字符）、目录记录取该行
+  原始 JSON/CSV 文本、版本说明取该行原文；二进制文件只提供 `hex` 预览并显式
+  标注 `<hex-preview>`，不冒充逐字文本。
+- 缺失写 `not_reported`，无法读取写 `<unreadable: …>`，**不编造哈希、DOI、
+  数值或引用**。
 
-## 4. locator 语法
+## 4. 冲突与降级
 
-| 形式 | 示例 | 说明 |
-|---|---|---|
-| 文件相对路径 | `materials/notes.md` | 相对 `/input` 的路径，统一用 `/` 分隔 |
-| 行定位 | `materials/notes.md#L12` 或 `#L12-L15` | 第 12 行或第 12–15 行 |
-| PDF 页 | `materials/paper.pdf#p3` | 第 3 页（若解析层提供页码） |
-| JSON 字段 | `materials/catalog.json#records[0].title` | 数组下标或字段路径 |
-| CSV 行 | `materials/list.csv#row=12` | 第 12 行 |
-| BibTeX 条目 | `materials/refs.bib#entry=smith2024` | cite key |
-| SQLite 表 | `materials/library.db#table=items` | 表名 |
+- 同一指标两个来源不一致时，两条证据都记录，并在 `uncertainty` 标
+  `source_conflict`；不擅自选一条"看起来对"的。
+- 版本链为启发式：`strength=preliminary`，`uncertainty` 说明"按主干+mtime
+  排序，非权威替代关系"，并把行政版本说明原文作为 `version_note` 结论附上。
+- 无法取内容哈希的文件（`too_large`/`unreadable`/`non_regular`）单独成一条
+  `inventory.skip.*` 结论，`quote` 记录原因，不静默丢弃。
 
-## 5. confidence 与 heuristic 约定
+## 5. 可复核性
 
-- 去重（内容 SHA-256 相同）、对账匹配、符号链接/硬链接别名：`confidence=high`，`heuristic=false`。
-- 版本链（归一化主干 + mtime 排序 + 内容差异）：`confidence=medium`，`heuristic=true`。
-- 字段映射、作者/年份抽取：若仅从文件名正则得到，标 `heuristic=true` 且 `confidence=medium/low`，并写入 `uncertainty`。
-
-## 6. 手工补充证据（--update 语义补丁）
-
-Agent 在步骤 2 的语义结论可写成 patch 增量合并，不覆盖脚本已有证据。示例：
-
-```json
-{
-  "status": "ok",
-  "computed": {
-    "version_candidates": [ { "stem": "report", "heuristic": true,
-      "note": "人工确认 report_v2 替代 report_v1" } ]
-  },
-  "evidence_map": {
-    "claims": [
-      { "claim_id": "manual-0001", "claim_type": "version_candidate",
-        "statement": "report_v2 替代 report_v1",
-        "conclusion_ref": "computed.version_candidates[0]",
-        "confidence": "high", "heuristic": false,
-        "basis": ["human_review"],
-        "sources": [
-          { "locator": "materials/notes.md#L3", "quote": "版本说明：v2 替换 v1",
-            "quote_sha256": "<复算值>", "evidence_type": "verbatim", "role": "subject" }
-        ],
-        "source_conflicts": [] }
-    ]
-  },
-  "sources": [],
-  "uncertainty": []
-}
-```
-
-注意：`--update` 对 dict 递归合并、对 list 按 JSON 去重追加，不会删除既有键。手工
-补丁若引用原文，`quote` 必须逐字、`locator` 必须可定位；不得补造 DOI、哈希或数值。
+任何结论都可按 `id → evidence.locator → 源文件 quote` 三步复核。审查者
+不需要相信任何叙述性描述，只需要打开 locator 对照 quote 是否逐字一致。

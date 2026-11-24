@@ -1,9 +1,7 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""main.py — thin entry wrapper for the document-library repair engine.
+"""main.py — thin entry point; the implementation lives in core_impl.py.
 
-All implementation lives in core_impl.py. Keep this file small so the
-evaluator can read the interface at a glance.
+Kept small on purpose so the CLI surface is stable and the whole engine can
+live in a single auditable module. Run with `python3 -B scripts/main.py --help`.
 """
 import os
 import runpy
@@ -12,24 +10,21 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _help() -> str:
+def _usage():
     return (
-        "usage: python3 -B scripts/main.py [options]\n"
-        "  --case-json PATH      case descriptor (default /input/case.json)\n"
-        "  --task-path PATH      task rules (default /input/task.md)\n"
-        "  --input-root PATH     source library (default /input)\n"
-        "  --output-dir PATH     results dir (default /app/output)\n"
-        "  --work-dir PATH       scratch dir (default /app/work)\n"
-        "  --skeleton-only       write partial result skeleton, then exit\n"
-        "  --update PATCH.json   merge an agent patch into result.json\n"
-        "  --check RESULT.json   validate result.json\n"
-        "  --selftest            run built-in synthetic-library self-test\n"
+        "usage: python3 -B scripts/main.py\n"
+        "         [--case-json PATH] [--task-path PATH] [--input-root DIR]\n"
+        "         [--output-dir DIR] [--work-dir DIR] [--max-hash-bytes N]\n"
+        "         [--skeleton-only]\n"
+        "         [--update PATCH.json [--result RESULT.json]]\n"
+        "         [--check RESULT.json [--check-case-json CASE.json]]\n"
+        "       defaults: --input-root /input --output-dir /app/output --work-dir /app/work"
     )
 
 
 if __name__ == "__main__":
     if "--help" in sys.argv or "-h" in sys.argv:
-        print(_help())
+        print(_usage())
         raise SystemExit(0)
     target = os.path.join(HERE, "core_impl.py")
     sys.argv[0] = target

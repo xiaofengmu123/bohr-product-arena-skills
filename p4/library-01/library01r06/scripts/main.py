@@ -1,18 +1,21 @@
-"""main.py - thin entry wrapper (implementation in core_impl.py).
+#!/usr/bin/env python3
+"""main.py -- thin entry wrapper for the document-library repair Skill.
 
-Run with:  python3 -B scripts/main.py --help
-The evaluator installs this Skill under /skills/weekly-skill and invokes the
-scripts by their relative paths from the SKILL.md root.
+Implementation lives in core_impl.py (kept separate so this wrapper stays small).
+Run: `python3 -B scripts/main.py [--input DIR] [--output DIR] [--work DIR] ...`
 """
+
 import os
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
 
-import core_impl  # noqa: E402
+def _main():
+    here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, here)
+    import core_impl
+    sys.argv[0] = os.path.join(here, "core_impl.py")
+    return core_impl.main()
 
 
 if __name__ == "__main__":
-    core_impl.main()
+    raise SystemExit(_main())

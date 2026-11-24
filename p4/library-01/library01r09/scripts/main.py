@@ -1,21 +1,8 @@
-"""main.py — thin entry wrapper for document library repair.
-
-Usage (paths default to /input, /app/output, /app/work):
-  python3 -B scripts/main.py --skeleton-only
-  python3 -B scripts/main.py
-  python3 -B scripts/main.py --update patch.json --result /app/output/result.json
-  python3 -B scripts/main.py --check /app/output/result.json --case-json /input/case.json
-
-Implementation lives in core_impl.py (same directory, stdlib only).
-"""
-
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import core_impl  # noqa: E402
-
-
+"""main.py wrapper"""
+import os, runpy, sys
+HERE=os.path.dirname(os.path.abspath(__file__))
 if __name__ == "__main__":
-    raise SystemExit(core_impl.main())
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("usage: main.py"); raise SystemExit(0)
+    sys.argv[0]=os.path.join(HERE,"core_impl.py")
+    runpy.run_path(sys.argv[0], run_name="__main__")

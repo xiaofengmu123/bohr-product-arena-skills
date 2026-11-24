@@ -31,6 +31,8 @@ cd "${SKILL_DIR:-/skills/weekly-skill}"
 python3 -B scripts/scaffold.py --input /input --output /app/output --work /app/work
 ```
 
+一步编排入口（scaffold → render → selfcheck）：`python3 -B scripts/main.py --input /input --output /app/output --work /app/work`。各脚本也可单独运行。
+
 ## 3. 输出契约（/app/output/result.json 必须满足）
 
 `result.json` 必须含：`case_id`、题目 `output_contract` 的**全部字段（原样回填，缺值给 null/[]，不改名、不删未知键）**，再加标准字段：

@@ -1,25 +1,24 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""selftest.py — self-check for the document library repair Skill.
+"""selftest.py — 自检脚本（对应评分维度的可运行验证）。
 
-Builds a *synthetic* throwaway case in a temp directory (never a pre-written
-answer for the official cases), runs the real pipeline, and asserts that:
+在临时目录构造合成输入，逐项验证：
+  * result.json 合法、字段齐全、contract 回填、case_id 非空
+  * 去重按内容哈希（不按文件名）
+  * 版本候选为启发式且标注 heuristic
+  * 坏 JSON/坏编码/超大文件/空目录不崩溃，记录进 errors/degradations
+  * 缺 case.json -> input_error；空输入 -> insufficient_evidence
+  * 重复运行结果一致（除时间戳外）
 
-  * result.json is valid and fills every output_contract field;
-  * the editable artifacts exist and are non-empty;
-  * duplicates are detected by content hash, not filename;
-  * a broken symlink and a hardlink alias are recorded, not silently skipped;
-  * a malformed JSON catalog degrades without crashing;
-  * --check and --update both work.
-
-Exit code 0 = all checks passed, 1 = a check failed, 2 = setup problem.
+用法：python3 -B scripts/selftest.py
+退出码 0 表示全部通过。
 """
+
 import io
 import json
 import os
 import shutil
 import sys
 import tempfile
+import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -27,162 +26,156 @@ sys.path.insert(0, HERE)
 import core_impl  # noqa: E402
 
 
-def _run(cmdargs):
-    try:
-        return core_impl.main(cmdargs)
-    except SystemExit as e:
-        return int(e.code or 0)
+PASS = 0
+FAIL = 0
+FAILURES = []
 
 
-def make_case(root):
-    os.makedirs(os.path.join(root, "data", "raw"), exist_ok=True)
-    os.makedirs(os.path.join(root, "data", "empty_dir"), exist_ok=True)
-    with open(os.path.join(root, "data", "raw", "report_v1.pdf"), "wb") as fh:
-        fh.write(b"%PDF-1.4\n" + b"content-AAA" * 100)
-    with open(os.path.join(root, "data", "raw", "report_v2.pdf"), "wb") as fh:
-        fh.write(b"%PDF-1.4\n" + b"content-AAA" * 100 + b"-revised")
-    # duplicate of report_v1, different name -> must be grouped by content hash
-    with open(os.path.join(root, "data", "report_copy.pdf"), "wb") as fh:
-        fh.write(b"%PDF-1.4\n" + b"content-AAA" * 100)
-    # hardlink alias
-    src = os.path.join(root, "data", "raw", "notes.txt")
-    with open(src, "w", encoding="utf-8") as fh:
-        fh.write("administrative note: version v1.2 approved 2024-05-01\n")
-    ln = os.path.join(root, "data", "raw", "notes_alias.txt")
-    try:
-        os.link(src, ln)
-    except OSError:
-        shutil.copyfile(src, ln)  # fallback where hardlinks are unavailable
-    # broken symlink
-    try:
-        os.symlink(os.path.join(root, "does-not-exist.bib"), os.path.join(root, "broken.bib"))
-    except OSError:
-        pass
-    # malformed JSON catalog -> must degrade, not crash
-    with open(os.path.join(root, "catalog.json"), "w", encoding="utf-8") as fh:
-        fh.write("{ this is not valid json")
-    # valid CSV catalog
-    with open(os.path.join(root, "catalog.csv"), "w", encoding="utf-8") as fh:
-        fh.write("path,title\nreport_v1.pdf,Quarterly report\nghost.pdf,Ghost entry\n")
-
-    case = {
-        "case_id": "selftest-0001",
-        "title": "synthetic self-test case",
-        "output_contract": {
-            "case_id": {"type": "string"},
-            "file_inventory": {"type": "array"},
-            "duplicate_groups": {"type": "array"},
-            "version_candidates": {"type": "array"},
-            "summary": {"type": "object"},
-            "recovery": {"type": "object"},
-            "unknown_field": {"type": "any"},
-        },
-        "questions": [
-            {"id": "q1", "question": "有多少重复文件"},
-            {"id": "q2", "question": "有哪些版本"},
-        ],
-    }
-    with open(os.path.join(root, "case.json"), "w", encoding="utf-8") as fh:
-        json.dump(case, fh, ensure_ascii=False)
-    with open(os.path.join(root, "task.md"), "w", encoding="utf-8") as fh:
-        fh.write("# 科研资料库自检\n\n版本 v1.2 于 2024-05-01 定稿。\n")
+def check(name, cond, detail=""):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"  PASS  {name}")
+    else:
+        FAIL += 1
+        FAILURES.append(name)
+        print(f"  FAIL  {name}  {detail}")
 
 
-def main():
-    tmp = tempfile.mkdtemp(prefix="library_selftest_")
+def run_case(tmp, files, case_json_obj=None, write_case=True):
     inp = os.path.join(tmp, "input")
     out = os.path.join(tmp, "output")
     work = os.path.join(tmp, "work")
-    failures = []
+    os.makedirs(inp, exist_ok=True)
+    for rel, content in files.items():
+        p = os.path.join(inp, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        mode = "wb" if isinstance(content, bytes) else "w"
+        kwargs = {} if isinstance(content, bytes) else {"encoding": "utf-8"}
+        with open(p, mode, **kwargs) as f:
+            f.write(content)
+    if write_case:
+        if case_json_obj is None:
+            case_json_obj = {
+                "case_id": "selftest-case",
+                "task": "synthetic",
+                "output_contract": {
+                    "manifest": {"type": "array"},
+                    "directory_tree": {"type": "string"},
+                    "dedup": {"type": "array"},
+                    "version": {"type": "array"},
+                    "recovery": {"type": "object"},
+                    "index": {"type": "object"},
+                },
+            }
+        with open(os.path.join(inp, "case.json"), "w", encoding="utf-8") as f:
+            json.dump(case_json_obj, f, ensure_ascii=False)
+    return inp, out, work
+
+
+def main():
+    global PASS, FAIL
+    tmp = tempfile.mkdtemp(prefix="library_selftest_")
     try:
-        os.makedirs(inp)
-        make_case(inp)
+        print("== 1. 正常案例 ==")
+        inp, out, work = run_case(tmp, {
+            "task.md": "# 规则\n按内容去重，保留版本关系。\n",
+            "materials/a.txt": "hello world\n",
+            "materials/b.txt": "hello world\n",          # 内容重复，文件名不同
+            "materials/report_v1.pdf": b"%PDF-1.4 v1",
+            "materials/report_v2.pdf": b"%PDF-1.4 v2",  # 版本对
+            "materials/catalog.json": json.dumps([
+                {"filename": "materials/a.txt", "sha256": core_impl.hash_file(
+                    os.path.join(os.path.join(tmp, "input"), "materials/a.txt"))[0]},
+                {"filename": "materials/missing.txt"},
+            ]),
+        })
+        rp, result = core_impl.run_pipeline(inp, out, work, None, None)
+        r = json.load(open(rp, encoding="utf-8"))
+        check("result.json 存在且合法", os.path.isfile(rp) and r.get("case_id") == "selftest-case")
+        check("status 合法", r.get("status") in ("ok", "partial", "insufficient_evidence", "input_error"))
+        check("output_contract 全字段回填", set(r.get("output_contract", {})) == {
+            "manifest", "directory_tree", "dedup", "version", "recovery", "index"})
+        check("sources/uncertainty/change_log 存在",
+              all(k in r for k in ("sources", "uncertainty", "change_log")))
+        check("去重按内容（a.txt 与 b.txt 同组）",
+              any(set(g["paths"]) == {"materials/a.txt", "materials/b.txt"}
+                  for g in r["computed"]["duplicate_groups"]))
+        check("版本候选为启发式",
+              all(c.get("heuristic") for c in r["computed"]["version_candidates"]))
+        check("对账区分 matches/missing",
+              r["computed"]["reconciliation"]["counts"]["matches"] == 1
+              and r["computed"]["reconciliation"]["counts"]["missing"] == 1)
+        for art in ("library_manifest.csv", "directory_tree.txt",
+                    "dedup_version.json", "recovery_report.json",
+                    "library_index.json", "library_manifest.md", "operation_log.jsonl"):
+            check(f"产物存在: {art}", os.path.isfile(os.path.join(out, art)))
 
-        # 1. skeleton-only must succeed and write a valid partial result
-        rc = _run(["--input", inp, "--output", out, "--work", work,
-                   "--case-json", os.path.join(inp, "case.json"),
-                   "--task-path", os.path.join(inp, "task.md"), "--skeleton-only"])
-        if rc != 0:
-            failures.append("skeleton-only exit=%d" % rc)
-        else:
-            r = json.load(open(os.path.join(out, "result.json"), encoding="utf-8"))
-            if r.get("status") != "partial" or not r.get("case_id"):
-                failures.append("skeleton result missing case_id/partial status")
+        print("== 2. 重复运行一致性 ==")
+        rp2, _ = core_impl.run_pipeline(inp, os.path.join(tmp, "output2"),
+                                        os.path.join(tmp, "work2"), None, None)
+        r2 = json.load(open(rp2, encoding="utf-8"))
+        c1 = json.dumps(r["computed"], sort_keys=True, ensure_ascii=False)
+        c2 = json.dumps(r2["computed"], sort_keys=True, ensure_ascii=False)
+        check("computed 确定性（除时间戳外）", c1 == c2)
 
-        # 2. full run
-        rc = _run(["--input", inp, "--output", out, "--work", work,
-                   "--case-json", os.path.join(inp, "case.json"),
-                   "--task-path", os.path.join(inp, "task.md")])
-        if rc != 0:
-            failures.append("full run exit=%d" % rc)
-        rpath = os.path.join(out, "result.json")
-        r = json.load(open(rpath, encoding="utf-8"))
+        print("== 3. 坏 JSON case.json ==")
+        inp3, out3, work3 = run_case(tmp, {"task.md": "# x\n"}, write_case=False)
+        with open(os.path.join(inp3, "case.json"), "w", encoding="utf-8") as f:
+            f.write("{ not valid json")
+        rp3, _ = core_impl.run_pipeline(inp3, out3, work3, None, None)
+        r3 = json.load(open(rp3, encoding="utf-8"))
+        check("坏 case.json -> input_error 不崩溃", r3["status"] == "input_error")
 
-        # 3. result.json contract completeness
-        for key in ("case_id", "status", "sources", "uncertainty", "pending_human",
-                    "change_log", "errors", "degradations", "runtime", "limitations",
-                    "computed", "artifacts"):
-            if key not in r:
-                failures.append("result missing key: %s" % key)
-        for field in ("file_inventory", "duplicate_groups", "version_candidates",
-                      "summary", "recovery", "unknown_field"):
-            if field not in r and "_contract_%s" % field not in r.get("computed", {}):
-                failures.append("contract field not filled: %s" % field)
+        print("== 4. 缺 case.json ==")
+        inp4, out4, work4 = run_case(tmp, {"task.md": "# x\n"}, write_case=False)
+        rp4, _ = core_impl.run_pipeline(inp4, out4, work4, None, None)
+        r4 = json.load(open(rp4, encoding="utf-8"))
+        check("缺 case.json -> input_error", r4["status"] == "input_error")
 
-        # 4. artifacts exist and are non-empty
-        for art in ("library_manifest.csv", "directory_tree.txt", "dedup_version.json",
-                    "recovery_report.json", "library_index.json", "library_manifest.md",
-                    "operation_log.jsonl"):
-            p = os.path.join(out, art)
-            if not os.path.isfile(p) or os.path.getsize(p) == 0:
-                failures.append("artifact missing/empty: %s" % art)
+        print("== 5. 空输入目录 ==")
+        inp5 = os.path.join(tmp, "empty_input")
+        os.makedirs(inp5, exist_ok=True)
+        out5 = os.path.join(tmp, "empty_out")
+        rp5, _ = core_impl.run_pipeline(inp5, out5, os.path.join(tmp, "empty_work"), None, None)
+        r5 = json.load(open(rp5, encoding="utf-8"))
+        check("空输入不崩溃、写出合法结果",
+              os.path.isfile(rp5) and r5.get("case_id") and r5.get("status"))
 
-        # 5. content-hash dedup (report_v1.pdf == report_copy.pdf)
-        dups = r["computed"].get("duplicate_groups", [])
-        dup_ok = any(
-            {"report_v1.pdf", "report_copy.pdf"} <= {os.path.basename(p) for p in g["paths"]}
-            for g in dups
-        )
-        if not dup_ok:
-            failures.append("content-hash duplicate group not found")
+        print("== 6. 坏编码文件名/文本 ==")
+        inp6, out6, work6 = run_case(tmp, {
+            "task.md": "# x\n",
+            "bad.bin": b"\xff\xfe\x00\x01\x02",
+        }, write_case=True)
+        rp6, _ = core_impl.run_pipeline(inp6, out6, work6, None, None)
+        r6 = json.load(open(rp6, encoding="utf-8"))
+        check("坏编码文本不崩溃", r6.get("status") in ("partial", "ok", "input_error"))
 
-        # 6. broken symlink recorded if it could be created
-        broken = [f for f in r["computed"].get("files", []) if f.get("broken")]
-        try:
-            os.symlink("x", os.path.join(tmp, "probe"))
-            symlink_ok = True
-            os.unlink(os.path.join(tmp, "probe"))
-        except OSError:
-            symlink_ok = False
-        if symlink_ok and not broken:
-            failures.append("broken symlink not recorded")
+        print("== 7. 骨架 + 更新 + 检查 ==")
+        inp7, out7, work7 = run_case(tmp, {"task.md": "# x\n"})
+        sk = core_impl.write_skeleton(out7, work7,
+                                      os.path.join(inp7, "case.json"))
+        rsk = json.load(open(sk, encoding="utf-8"))
+        check("骨架先落盘 status=partial", rsk["status"] == "partial" and rsk["case_id"])
+        patch = {"status": "ok", "notes": "semantic refinement"}
+        pp = os.path.join(tmp, "patch.json")
+        with open(pp, "w", encoding="utf-8") as f:
+            json.dump(patch, f)
+        core_impl.update_result(sk, pp)
+        rup = json.load(open(sk, encoding="utf-8"))
+        check("update 合并生效", rup["status"] == "ok" and rup["notes"] == "semantic refinement")
+        ok, problems = core_impl.check_result(sk, os.path.join(inp7, "case.json"))
+        check("check 通过", ok, "; ".join(problems))
 
-        # 7. malformed JSON catalog -> recorded, no crash
-        rec = r["computed"].get("reconciliation", {})
-        cats = rec.get("catalogs", [])
-        if not any(c.get("path", "").endswith("catalog.json") and c.get("error") for c in cats):
-            failures.append("malformed catalog not recorded")
-
-        # 8. --check and --update
-        rc = _run(["--check", rpath, "--case-json", os.path.join(inp, "case.json")])
-        if rc != 0:
-            failures.append("--check exit=%d" % rc)
-        patch = os.path.join(tmp, "patch.json")
-        with open(patch, "w", encoding="utf-8") as fh:
-            json.dump({"computed": {"semantic": "confirmed by reviewer"}}, fh)
-        rc = _run(["--update", patch, "--result", rpath])
-        if rc != 0:
-            failures.append("--update exit=%d" % rc)
-
-        if failures:
-            print("selftest: FAIL")
-            for f in failures:
-                print("  - %s" % f)
-            return 1
-        print("selftest: OK (case_id=%s status=%s)" % (r.get("case_id"), r.get("status")))
-        return 0
+        print(f"\n== 结果: {PASS} PASS, {FAIL} FAIL ==")
+        if FAILURES:
+            print("失败项:", ", ".join(FAILURES))
+    except Exception:
+        print(traceback.format_exc())
+        FAIL += 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    return 1 if FAIL else 0
 
 
 if __name__ == "__main__":

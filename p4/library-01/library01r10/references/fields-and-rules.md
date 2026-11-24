@@ -1,86 +1,75 @@
-# 字段字典与规则（fields-and-rules）
+# 字段字典与处理规则（fields-and-rules）
 
-本文件规定管道使用的确定性规则、中间表示（IR）结构、目录/清单解析字段与
-`decisions.json` 覆盖层写法。目标是让任何人在无作者环境里按同一规则复跑。
+本文定义 Skill 各产物/中间表示（IR）的字段与确定性规则，供复核者与后续 Agent 使用。
 
-## 1. 中间表示（IR）
+## 1. status 取值
 
-管道在 `/app/work/inventory.ir.json` 写入一份规范 IR，所有分析阶段都是对 IR 的
-纯函数；`/app/work/decisions.empty.json` 是给 Agent 填写的决策骨架。
+| 值 | 含义 | 触发条件 |
+|---|---|---|
+| `ok` | 完成，结论有证据支撑 | 正常完成且无 case 级错误 |
+| `partial` | 部分完成，存在已知缺口 | 骨架阶段；或渲染/写入失败 |
+| `insufficient_evidence` | 材料不足 | 输入根不存在或没有任何文件/目录 |
+| `input_error` | 输入错误 | case.json 缺失/坏 JSON/非对象 |
 
-顶层键：`schema_version`、`meta`、`contract`、`contract_keys`、`discovery`、
-`entries`、`catalogs`、`tree`、`duplicates`、`versions`、`aliases`、
-`version_notes`、`reconciliation`、`index`、`answers`、`errors`、
-`degradations`、`limitations`、`pending_human`、`sources`、`uncertainty`、
-`change_log`、`artifact_paths`、`runtime`。
+## 2. output_contract 识别与回填
 
-## 2. 条目字段（entries[]）
+- 候选键名（按顺序）：`output_contract`、`output`、`result_schema`、`contract`、
+  `outputSchema`、`result_schema`；脚本也从 `data["output"]`/`data["result"]` 内嵌套查找。
+- 回填规则：dict 值缺省为 `{}`，list 值缺省为 `[]`，其余缺省为 `null`；键名不变、未知键不删。
+- 保留键冲突：contract 键与 `case_id/status/sources/...` 冲突时改存 `computed._contract_<字段>`。
+- 机械自动填充（名称匹配才填，其余留给语义层）：`files/manifest/inventory`→computed.files，
+  `summary`→computed.summary，`duplicates/duplicate_groups`→computed.duplicate_groups，
+  `versions/version_candidates`→computed.version_candidates，`aliases`→computed.aliases，
+  `reconciliation/recovery`→computed.reconciliation，`index`→computed.index，
+  `answers`→computed.answers，`manifest_path/recovery_report/dedup_version/index_file/
+  operation_log/report`→对应产物文件名。未填充字段记入 `uncertainty`（`contract_field_unfilled`）。
 
-| 字段 | 说明 |
-|---|---|
-| `path` | 相对路径，统一 `/` 分隔，用于排序键 |
-| `kind` | `file`/`dir`/`symlink`/`broken_link`/`special` |
-| `size` | 字节数（目录为 0） |
-| `mtime`/`mode` | 修改时间与权限位；`mode` 为 `stat.S_IMODE` |
-| `sha256` | 内容哈希；超大/不可读为 `null` |
-| `content_kind` | `pdf`/`text`/`json`/`csv`/`bibtex`/`ris`/`sqlite`/`binary`/`unknown` |
-| `encoding` | `utf-8-sig`/`utf-8`/`latin-1`/`skipped:too_large`/`unreadable` |
-| `flags` | `too_large`/`unreadable`/`non_regular`/`symlink`/`broken_link`/`bad_encoding` |
-| `link_target` | 符号链接目标（只读记录，不跟随） |
-| `inode` | `[st_dev, st_ino]`，仅当 `st_nlink>1` 时写入，用于硬链接分组 |
+## 3. 文件条目（IR `computed.files[].*` / manifest CSV 列）
 
-## 3. 判定规则
+`rel_path, abs_path, name, kind, size, sha256, sha256_status, mtime, ctime, permissions,
+uid, gid, inode, nlink, extension, mime_hint, is_binary, target, depth, is_hidden`
 
-- **去重**：按 `sha256` 分组，`len(paths)>1` 才记为重复组；不按文件名/扩展名。
-- **版本链**：`_version_stem()` 去掉扩展名后，用正则去除版本记号
-  （`v1`/`draft`/`final`/`rev`/`copy`/`backup`/`old`/`new`/日期/`(1)` 等），
-  再归一化为小写字母数字主干；按 `(parent, stem)` 分桶，桶内按 `mtime` 升序
-  生成候选链，相邻成员记录 `size_delta` 与 `same_content`，并标 `heuristic=true`。
-- **别名**：符号链接按 `link_target` 分组；断链单列 `broken_links`；硬链接按
-  `inode` 分组（Windows 下 `st_ino` 不可靠时标记 `hardlink_detection=unavailable`）。
-- **对账**：目录记录先按 `path`/`file`/`filename`/`name`/`filepath`/`relpath`/`id`
-  精确匹配文件系统，再按唯一 basename 回退匹配；比较 `size` 与 `sha256`（或
-  `sha256sum`/`hash`），得出 `matches`/`mismatches`/`missing`/`orphaned`。
-- **版本说明**：三路来源——case.json 的 `version_notes`/`versions`/
-  `version_history`/`administrative_versions`；task.md 中的关键词上下文；
-  目录记录中的 `replaces`/`supersedes`/`version`/`revision`/`parent`/
-  `superseded_by`/`revision_of`。全部保留 `source` 出处。
+- `kind`：`file | dir | symlink | broken_symlink | other | unreadable`。
+- `sha256_status`：`hashed | too_large | symlink | non_regular | unreadable | not_hashed`。
+- `permissions`/`mode`：八进制字符串（如 `0o644`）；`uid/gid` 保留运行时数值。
+- 内容哈希上限：默认 2 MiB（`DEFAULT_HASH_LIMIT`），超过者只记录路径/大小/权限/类型。
+- 类型判定：扩展名映射表 + 魔数头部（`%PDF`、`SQLite format 3`、`PK`、`\x89PNG` 等）；
+  仅做启发式，完整内容解析留给语义层。
 
-## 4. 目录/清单解析字段
+## 4. 去重与版本规则
 
-- JSON：顶层列表，或 `files`/`entries`/`items`/`records`/`manifest` 列表，或单对象。
-- CSV/TSV：`csv.Sniffer` 探测分隔符，`DictReader` 读列头。
-- BibTeX：`@type{key, ...}`，字段小写（`title`/`author`/`year`/`journal`/`doi`…）。
-- RIS：`TY`…`ER` 块，两字母标签小写。
-- SQLite：只读打开 `sqlite_master` 枚举表，逐表 `SELECT *`；失败记
-  `sqlite_open_error`/`sqlite_query_error`。
-- 所有记录带 `_catalog`（来源文件路径）与 `_index`（行序），字段出处可回溯。
+- 去重：仅对 `kind=file` 且 `sha256_status=hashed` 的条目按 SHA-256 分组，组内 `count ≥ 2`。
+- 版本候选：先归一化主干（NFKC 小写、去扩展名、去除 `v/ver/version/rev N`、
+  `final/draft/copy/backup/old/new`、`YYYY-MM-DD`、`YYYYMMDD`、`(1)/(2)/copy N` 等 token），
+  按 `(归一化主干, 扩展名)` 分组；组内 `≥2` 个不同哈希 → 候选链，按 mtime 升序，
+  相邻做文本相似度（difflib，上限 128 KiB）。候选一律标 `heuristic=True`。
 
-## 5. decisions.json 覆盖层
+## 5. 别名规则
 
-Agent 的语义结论以数据形式覆盖到最终 result.json，不进入代码路径：
+- 符号链接：`lstat` 识别；`os.stat` 失败判 `broken_symlink`，`target` 存 `os.readlink` 结果。
+- 硬链接：`nlink > 1` 的 regular file 按 `st_ino` 分组，组内 `≥2` 个路径记为硬链接别名组。
 
-```json
-{
-  "contract": {"<contract字段>": "<按题意的最终值>"},
-  "notes": [
-    {"item": "version_chain_confirm", "decision": "linked",
-     "paths": ["materials/a.pdf", "materials/b.pdf"],
-     "sources": [{"item": "版本说明", "locator": "task.md",
-                  "quote": "draft-v1 被 draft-v2 取代"}]}
-  ],
-  "uncertainty": [{"item": "...", "reason": "...", "severity": "low|medium|high"}],
-  "pending_human": ["..."]
-}
-```
+## 6. 库目录解析与对账
 
-`contract` 之外的键会被 `_build_result` 忽略；每个 `notes` 条目必须带
-locator+quote 证据。覆盖层合并不改动机械层的确定性结论，只补充语义判定与
-contract 字段值。
+- 支持的库目录格式：JSON（list/dict）、CSV（首行表头）、BibTeX（`@type{key, field={...}}`）、
+  RIS（`TY  -`/`ER  -` 记录）、SQLite（只读打开，逐表转 dict，每表限 1000 行）。
+- 目录发现：扩展名 ∈ {json,csv,bib,ris,sqlite,db,sqlite3}，或文件名命中
+  `manifest|catalog|index|library|inventory|list|records|zotero|reference`。
+- 对账路径字段：依次尝试 `path/file/filename/location/rel_path/relative_path/filepath/url/name/id`；
+  相对路径先去 `./`；无法按路径命中时回退到 basename 唯一匹配。
+- 分类：`matches`（路径存在且哈希一致或目录未给哈希）、`mismatches`（哈希不一致）、
+  `missing`（目录有而文件无）、`orphaned`（文件有而目录未引用）。
+- 哈希字段候选：`sha256/hash/checksum/md5`。
 
-## 6. 保留键冲突
+## 7. 确定性保证
 
-result.json 的保留键为 `case_id`/`status`/`sources`/`uncertainty`/`change_log`/
-`errors`/`degradations`/`runtime`/`limitations`/`pending_human`/`computed`/
-`artifacts`/`decisions`。若题目 contract 出现同名键，其值写入
-`computed._contract_<字段>`，不改名、不删除。
+- 遍历用 `os.walk(topdown=True, followlinks=False)`，`dirnames`/`filenames` 均排序；
+  输出 JSON 用 `sort_keys=True`；无随机数、无并发、无网络。
+- 时间字段仅出现在 `runtime` 与 `change_log`（骨架/每次 merge 追加一条）；其余字段跨运行一致。
+
+## 8. 编码与错误处理
+
+- 文本统一按 `utf-8-sig` → `utf-8` → `latin-1` 顺序解码，坏编码不崩溃。
+- JSON 写盘用临时文件 + `os.replace` 原子替换；`errors`/`degradations` 保存所有
+  `unreadable`、`hash_failed`、`bad_json`、`bad_csv`、`sqlite_open_error`、`sqlite_query_error`、
+  `listdir_failed`、`write_failed`、`input_root_missing`、`case_json_missing` 等具体原因。

@@ -8,7 +8,7 @@
 - `p4/<题目>/<包名>/`：单个候选包（SKILL.md + scripts + references + META.json + GITHUB_URL.txt）
 - 每个包目录内的 `GITHUB_URL.txt` 为该包在 GitHub 上的公开链接；提交到比赛平台时附带的即是此链接。
 
-共 63 个题目，618 个包。
+共 63 个题目，622 个包。
 
 ## 题目索引
 
@@ -30,8 +30,8 @@
 | [graphics-03](./p4/graphics-03/) | 生物机制图与通路图 | 10 | graphics03r02 |
 | [graphics-04](./p4/graphics-04/) | 实验装置与技术路线图 | 10 | graphics04r04 |
 | [graphics-05](./p4/graphics-05/) | Graphical Abstract（图形摘要） | 10 | graphics05r01 |
-| [library-01](./p4/library-01/) | 科研资料库与文件管理 | 10 | library01r04 |
-| [library-02](./p4/library-02/) | 科研文件智能检索 | 2 | - |
+| [library-01](./p4/library-01/) | 科研资料库与文件管理 | 10 | library01r07 |
+| [library-02](./p4/library-02/) | 科研文件智能检索 | 6 | - |
 | [library-03](./p4/library-03/) | 文献与资料自动分类 | 8 | library03r08 |
 | [library-04](./p4/library-04/) | 科研知识库问答 | 10 | library04r09 |
 | [library-05](./p4/library-05/) | 阅读批注与知识沉淀 | 10 | library05r05 |
