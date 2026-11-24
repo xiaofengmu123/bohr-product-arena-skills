@@ -20,7 +20,7 @@
 | [slides03r06](./slides03r06/) | 6 | 50 KB | 候选 |
 | [slides03r07](./slides03r07/) | 6 | 44 KB | 候选 |
 | [slides03r08](./slides03r08/) | 8 | 47 KB | 候选 |
-| [slides03r09](./slides03r09/) | 5 | 25 KB | ✅ 提交作品 |
+| [slides03r09](./slides03r09/) | 6 | 25 KB | ✅ 提交作品 |
 | [slides03r10](./slides03r10/) | 6 | 45 KB | 候选 |
 
 ## 包内容速览

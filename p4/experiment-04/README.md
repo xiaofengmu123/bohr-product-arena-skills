@@ -21,7 +21,7 @@
 | [experiment04r07](./experiment04r07/) | 6 | 83 KB | 候选 |
 | [experiment04r08](./experiment04r08/) | 6 | 77 KB | 候选 |
 | [experiment04r09](./experiment04r09/) | 6 | 65 KB | 候选 |
-| [experiment04r10](./experiment04r10/) | 7 | 82 KB | ✅ 提交作品 |
+| [experiment04r10](./experiment04r10/) | 8 | 82 KB | ✅ 提交作品 |
 
 ## 包内容速览
 

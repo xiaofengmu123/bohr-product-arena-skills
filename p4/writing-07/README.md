@@ -16,7 +16,7 @@
 | [writing07r02](./writing07r02/) | 6 | 43 KB | 候选 |
 | [writing07r03](./writing07r03/) | 5 | 50 KB | 候选 |
 | [writing07r04](./writing07r04/) | 6 | 47 KB | 候选 |
-| [writing07r05](./writing07r05/) | 6 | 52 KB | ✅ 提交作品 |
+| [writing07r05](./writing07r05/) | 7 | 52 KB | ✅ 提交作品 |
 | [writing07r06](./writing07r06/) | 6 | 57 KB | 候选 |
 | [writing07r07](./writing07r07/) | 8 | 44 KB | 候选 |
 | [writing07r08](./writing07r08/) | 5 | 59 KB | 候选 |

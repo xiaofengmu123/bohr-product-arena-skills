@@ -15,7 +15,7 @@
 | [writing06r01](./writing06r01/) | 9 | 38 KB | 候选 |
 | [writing06r02](./writing06r02/) | 6 | 46 KB | 候选 |
 | [writing06r03](./writing06r03/) | 6 | 55 KB | 候选 |
-| [writing06r04](./writing06r04/) | 9 | 53 KB | ✅ 提交作品 |
+| [writing06r04](./writing06r04/) | 10 | 53 KB | ✅ 提交作品 |
 | [writing06r05](./writing06r05/) | 7 | 48 KB | 候选 |
 | [writing06r06](./writing06r06/) | 5 | 46 KB | 候选 |
 | [writing06r07](./writing06r07/) | 6 | 48 KB | 候选 |

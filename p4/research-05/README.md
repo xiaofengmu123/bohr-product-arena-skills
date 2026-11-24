@@ -15,7 +15,7 @@
 | [research05r01](./research05r01/) | 9 | 76 KB | 候选 |
 | [research05r02](./research05r02/) | 6 | 58 KB | 候选 |
 | [research05r03](./research05r03/) | 6 | 59 KB | 候选 |
-| [research05r04](./research05r04/) | 6 | 51 KB | ✅ 提交作品 |
+| [research05r04](./research05r04/) | 7 | 51 KB | ✅ 提交作品 |
 | [research05r05](./research05r05/) | 6 | 46 KB | 候选 |
 | [research05r06](./research05r06/) | 6 | 61 KB | 候选 |
 | [research05r07](./research05r07/) | 6 | 50 KB | 候选 |

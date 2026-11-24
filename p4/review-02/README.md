@@ -21,7 +21,7 @@
 | [review02r07](./review02r07/) | 6 | 62 KB | 候选 |
 | [review02r08](./review02r08/) | 6 | 47 KB | 候选 |
 | [review02r09](./review02r09/) | 5 | 34 KB | 候选 |
-| [review02r10](./review02r10/) | 6 | 61 KB | ✅ 提交作品 |
+| [review02r10](./review02r10/) | 7 | 61 KB | ✅ 提交作品 |
 
 ## 包内容速览
 

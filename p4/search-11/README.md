@@ -17,7 +17,7 @@
 | [search11r03](./search11r03/) | 6 | 52 KB | 候选 |
 | [search11r04](./search11r04/) | 6 | 56 KB | 候选 |
 | [search11r05](./search11r05/) | 6 | 66 KB | 候选 |
-| [search11r06](./search11r06/) | 6 | 67 KB | ✅ 提交作品 |
+| [search11r06](./search11r06/) | 7 | 67 KB | ✅ 提交作品 |
 | [search11r07](./search11r07/) | 6 | 59 KB | 候选 |
 | [search11r08](./search11r08/) | 6 | 58 KB | 候选 |
 | [search11r09](./search11r09/) | 6 | 36 KB | 候选 |

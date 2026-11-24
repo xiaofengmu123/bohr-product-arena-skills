@@ -16,7 +16,7 @@
 | [library05r02](./library05r02/) | 7 | 67 KB | 候选 |
 | [library05r03](./library05r03/) | 6 | 79 KB | 候选 |
 | [library05r04](./library05r04/) | 6 | 81 KB | 候选 |
-| [library05r05](./library05r05/) | 6 | 75 KB | ✅ 提交作品 |
+| [library05r05](./library05r05/) | 7 | 75 KB | ✅ 提交作品 |
 | [library05r06](./library05r06/) | 6 | 76 KB | 候选 |
 | [library05r07](./library05r07/) | 6 | 82 KB | 候选 |
 | [library05r08](./library05r08/) | 6 | 82 KB | 候选 |

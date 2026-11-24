@@ -20,7 +20,7 @@
 | [library04r06](./library04r06/) | 6 | 53 KB | 候选 |
 | [library04r07](./library04r07/) | 5 | 60 KB | 候选 |
 | [library04r08](./library04r08/) | 6 | 64 KB | 候选 |
-| [library04r09](./library04r09/) | 5 | 44 KB | ✅ 提交作品 |
+| [library04r09](./library04r09/) | 6 | 44 KB | ✅ 提交作品 |
 | [library04r10](./library04r10/) | 4 | 63 KB | 候选 |
 
 ## 包内容速览

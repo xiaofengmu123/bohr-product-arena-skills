@@ -15,7 +15,7 @@
 | [search09r01](./search09r01/) | 6 | 52 KB | 候选 |
 | [search09r02](./search09r02/) | 6 | 62 KB | 候选 |
 | [search09r03](./search09r03/) | 6 | 56 KB | 候选 |
-| [search09r04](./search09r04/) | 6 | 52 KB | ✅ 提交作品 |
+| [search09r04](./search09r04/) | 7 | 52 KB | ✅ 提交作品 |
 | [search09r05](./search09r05/) | 6 | 52 KB | 候选 |
 | [search09r06](./search09r06/) | 6 | 65 KB | 候选 |
 | [search09r07](./search09r07/) | 6 | 54 KB | 候选 |

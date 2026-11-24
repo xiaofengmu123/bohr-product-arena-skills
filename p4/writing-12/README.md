@@ -13,7 +13,7 @@
 | 包目录 | 文件数 | 大小 | 是否本次提交 |
 |---|---|---|---|
 | [writing12r01](./writing12r01/) | 7 | 62 KB | 候选 |
-| [writing12r02](./writing12r02/) | 6 | 58 KB | ✅ 提交作品 |
+| [writing12r02](./writing12r02/) | 7 | 58 KB | ✅ 提交作品 |
 | [writing12r03](./writing12r03/) | 6 | 60 KB | 候选 |
 | [writing12r04](./writing12r04/) | 6 | 62 KB | 候选 |
 | [writing12r05](./writing12r05/) | 6 | 46 KB | 候选 |

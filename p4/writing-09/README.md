@@ -17,7 +17,7 @@
 | [writing09r03](./writing09r03/) | 8 | 40 KB | 候选 |
 | [writing09r04](./writing09r04/) | 8 | 53 KB | 候选 |
 | [writing09r05](./writing09r05/) | 7 | 47 KB | 候选 |
-| [writing09r06](./writing09r06/) | 6 | 47 KB | ✅ 提交作品 |
+| [writing09r06](./writing09r06/) | 7 | 47 KB | ✅ 提交作品 |
 | [writing09r07](./writing09r07/) | 5 | 56 KB | 候选 |
 | [writing09r08](./writing09r08/) | 8 | 44 KB | 候选 |
 | [writing09r09](./writing09r09/) | 4 | 30 KB | 候选 |

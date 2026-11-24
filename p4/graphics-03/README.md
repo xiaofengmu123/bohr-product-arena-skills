@@ -13,7 +13,7 @@
 | 包目录 | 文件数 | 大小 | 是否本次提交 |
 |---|---|---|---|
 | [graphics03r01](./graphics03r01/) | 6 | 64 KB | 候选 |
-| [graphics03r02](./graphics03r02/) | 6 | 66 KB | ✅ 提交作品 |
+| [graphics03r02](./graphics03r02/) | 7 | 66 KB | ✅ 提交作品 |
 | [graphics03r03](./graphics03r03/) | 6 | 64 KB | 候选 |
 | [graphics03r04](./graphics03r04/) | 6 | 67 KB | 候选 |
 | [graphics03r05](./graphics03r05/) | 6 | 68 KB | 候选 |

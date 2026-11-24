@@ -18,7 +18,7 @@
 | [library01r04](./library01r04/) | 6 | 72 KB | 候选 |
 | [library01r05](./library01r05/) | 6 | 82 KB | 候选 |
 | [library01r06](./library01r06/) | 6 | 80 KB | 候选 |
-| [library01r07](./library01r07/) | 6 | 81 KB | ✅ 提交作品 |
+| [library01r07](./library01r07/) | 7 | 81 KB | ✅ 提交作品 |
 | [library01r08](./library01r08/) | 6 | 71 KB | 候选 |
 | [library01r09](./library01r09/) | 7 | 56 KB | 候选 |
 | [library01r10](./library01r10/) | 6 | 85 KB | 候选 |

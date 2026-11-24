@@ -15,7 +15,7 @@
 | [experiment05r01](./experiment05r01/) | 6 | 59 KB | 候选 |
 | [experiment05r02](./experiment05r02/) | 5 | 46 KB | 候选 |
 | [experiment05r03](./experiment05r03/) | 6 | 61 KB | 候选 |
-| [experiment05r04](./experiment05r04/) | 6 | 62 KB | ✅ 提交作品 |
+| [experiment05r04](./experiment05r04/) | 7 | 63 KB | ✅ 提交作品 |
 | [experiment05r05](./experiment05r05/) | 6 | 66 KB | 候选 |
 | [experiment05r06](./experiment05r06/) | 6 | 66 KB | 候选 |
 | [experiment05r07](./experiment05r07/) | 6 | 57 KB | 候选 |

@@ -17,7 +17,7 @@
 | [library03r03](./library03r03/) | 5 | 25 KB | 候选 |
 | [library03r04](./library03r04/) | 8 | 61 KB | 候选 |
 | [library03r06](./library03r06/) | 7 | 134 KB | 候选 |
-| [library03r08](./library03r08/) | 8 | 95 KB | ✅ 提交作品 |
+| [library03r08](./library03r08/) | 9 | 95 KB | ✅ 提交作品 |
 | [library03r09](./library03r09/) | 4 | 44 KB | 候选 |
 | [library03r10](./library03r10/) | 4 | 17 KB | 候选 |
 

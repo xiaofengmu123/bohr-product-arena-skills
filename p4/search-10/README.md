@@ -12,7 +12,7 @@
 
 | 包目录 | 文件数 | 大小 | 是否本次提交 |
 |---|---|---|---|
-| [search10r01](./search10r01/) | 6 | 43 KB | ✅ 提交作品 |
+| [search10r01](./search10r01/) | 7 | 43 KB | ✅ 提交作品 |
 | [search10r02](./search10r02/) | 5 | 42 KB | 候选 |
 | [search10r03](./search10r03/) | 6 | 52 KB | 候选 |
 | [search10r04](./search10r04/) | 6 | 41 KB | 候选 |

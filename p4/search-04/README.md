@@ -19,7 +19,7 @@
 | [search04r05](./search04r05/) | 6 | 66 KB | 候选 |
 | [search04r06](./search04r06/) | 7 | 58 KB | 候选 |
 | [search04r07](./search04r07/) | 6 | 62 KB | 候选 |
-| [search04r08](./search04r08/) | 6 | 59 KB | ✅ 提交作品 |
+| [search04r08](./search04r08/) | 7 | 60 KB | ✅ 提交作品 |
 | [search04r09](./search04r09/) | 5 | 49 KB | 候选 |
 | [search04r10](./search04r10/) | 5 | 57 KB | 候选 |
 

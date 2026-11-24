@@ -12,8 +12,11 @@
 | [library02r02](./library02r02/) | 6 | 75 KB | 候选 |
 | [library02r03](./library02r03/) | 6 | 80 KB | 候选 |
 | [library02r04](./library02r04/) | 6 | 74 KB | 候选 |
-| [library02r05](./library02r05/) | 6 | 74 KB | 候选 |
+| [library02r05](./library02r05/) | 7 | 74 KB | 候选 |
 | [library02r06](./library02r06/) | 6 | 70 KB | 候选 |
+| [library02r07](./library02r07/) | 6 | 76 KB | 候选 |
+| [library02r08](./library02r08/) | 6 | 75 KB | 候选 |
+| [library02r10](./library02r10/) | 6 | 79 KB | 候选 |
 
 ## 包内容速览
 

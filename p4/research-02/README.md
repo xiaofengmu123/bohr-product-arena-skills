@@ -13,7 +13,7 @@
 | 包目录 | 文件数 | 大小 | 是否本次提交 |
 |---|---|---|---|
 | [research02r01](./research02r01/) | 6 | 53 KB | 候选 |
-| [research02r02](./research02r02/) | 6 | 46 KB | ✅ 提交作品 |
+| [research02r02](./research02r02/) | 7 | 46 KB | ✅ 提交作品 |
 | [research02r03](./research02r03/) | 6 | 51 KB | 候选 |
 | [research02r04](./research02r04/) | 6 | 44 KB | 候选 |
 | [research02r05](./research02r05/) | 6 | 52 KB | 候选 |

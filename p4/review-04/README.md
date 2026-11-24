@@ -17,7 +17,7 @@
 | [review04r03](./review04r03/) | 6 | 70 KB | 候选 |
 | [review04r04](./review04r04/) | 6 | 74 KB | 候选 |
 | [review04r05](./review04r05/) | 5 | 52 KB | 候选 |
-| [review04r06](./review04r06/) | 6 | 63 KB | ✅ 提交作品 |
+| [review04r06](./review04r06/) | 7 | 63 KB | ✅ 提交作品 |
 | [review04r07](./review04r07/) | 6 | 70 KB | 候选 |
 | [review04r08](./review04r08/) | 6 | 61 KB | 候选 |
 | [review04r09](./review04r09/) | 5 | 60 KB | 候选 |

@@ -8,14 +8,12 @@
 - `p4/<题目>/<包名>/`：单个候选包（SKILL.md + scripts + references + META.json + GITHUB_URL.txt）
 - 每个包目录内的 `GITHUB_URL.txt` 为该包在 GitHub 上的公开链接；提交到比赛平台时附带的即是此链接。
 
-共 63 个题目，622 个包。
+共 61 个题目，605 个包。
 
 ## 题目索引
 
 | 题目 | 标题 | 候选包数 | 本次提交 |
 |---|---|---|---|
-| [analysis-01](./p4/analysis-01/) | 科研数据清洗与处理 | 10 | analysis01r02 |
-| [analysis-02](./p4/analysis-02/) | 统计分析与结果解读 | 10 | analysis02r01 |
 | [analysis-03](./p4/analysis-03/) | 科研数据可视化 | 10 | analysis03r04 |
 | [analysis-04](./p4/analysis-04/) | 科研代码生成与执行 | 10 | analysis04r01 |
 | [analysis-05](./p4/analysis-05/) | 多步骤数据分析 Agent | 10 | analysis05r01 |
@@ -31,7 +29,7 @@
 | [graphics-04](./p4/graphics-04/) | 实验装置与技术路线图 | 10 | graphics04r04 |
 | [graphics-05](./p4/graphics-05/) | Graphical Abstract（图形摘要） | 10 | graphics05r01 |
 | [library-01](./p4/library-01/) | 科研资料库与文件管理 | 10 | library01r07 |
-| [library-02](./p4/library-02/) | 科研文件智能检索 | 6 | - |
+| [library-02](./p4/library-02/) | 科研文件智能检索 | 9 | - |
 | [library-03](./p4/library-03/) | 文献与资料自动分类 | 8 | library03r08 |
 | [library-04](./p4/library-04/) | 科研知识库问答 | 10 | library04r09 |
 | [library-05](./p4/library-05/) | 阅读批注与知识沉淀 | 10 | library05r05 |

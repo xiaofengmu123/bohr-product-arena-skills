@@ -19,7 +19,7 @@
 | [review03r05](./review03r05/) | 6 | 63 KB | 候选 |
 | [review03r06](./review03r06/) | 9 | 81 KB | 候选 |
 | [review03r07](./review03r07/) | 6 | 74 KB | 候选 |
-| [review03r08](./review03r08/) | 7 | 64 KB | ✅ 提交作品 |
+| [review03r08](./review03r08/) | 8 | 64 KB | ✅ 提交作品 |
 | [review03r09](./review03r09/) | 6 | 54 KB | 候选 |
 | [review03r10](./review03r10/) | 6 | 59 KB | 候选 |
 

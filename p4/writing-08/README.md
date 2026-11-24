@@ -19,7 +19,7 @@
 | [writing08r05](./writing08r05/) | 5 | 42 KB | 候选 |
 | [writing08r06](./writing08r06/) | 6 | 59 KB | 候选 |
 | [writing08r07](./writing08r07/) | 5 | 53 KB | 候选 |
-| [writing08r08](./writing08r08/) | 9 | 59 KB | ✅ 提交作品 |
+| [writing08r08](./writing08r08/) | 10 | 59 KB | ✅ 提交作品 |
 | [writing08r09](./writing08r09/) | 5 | 31 KB | 候选 |
 | [writing08r10](./writing08r10/) | 6 | 52 KB | 候选 |
 

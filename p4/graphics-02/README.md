@@ -18,7 +18,7 @@
 | [graphics02r04](./graphics02r04/) | 6 | 64 KB | 候选 |
 | [graphics02r05](./graphics02r05/) | 6 | 79 KB | 候选 |
 | [graphics02r06](./graphics02r06/) | 8 | 67 KB | 候选 |
-| [graphics02r07](./graphics02r07/) | 6 | 47 KB | ✅ 提交作品 |
+| [graphics02r07](./graphics02r07/) | 7 | 47 KB | ✅ 提交作品 |
 | [graphics02r08](./graphics02r08/) | 6 | 71 KB | 候选 |
 | [graphics02r09](./graphics02r09/) | 6 | 29 KB | 候选 |
 | [graphics02r10](./graphics02r10/) | 6 | 78 KB | 候选 |

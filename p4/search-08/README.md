@@ -21,7 +21,7 @@
 | [search08r07](./search08r07/) | 6 | 60 KB | 候选 |
 | [search08r08](./search08r08/) | 6 | 61 KB | 候选 |
 | [search08r09](./search08r09/) | 6 | 46 KB | 候选 |
-| [search08r10](./search08r10/) | 6 | 64 KB | ✅ 提交作品 |
+| [search08r10](./search08r10/) | 7 | 65 KB | ✅ 提交作品 |
 
 ## 包内容速览
 

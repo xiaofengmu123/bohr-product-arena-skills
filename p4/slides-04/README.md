@@ -19,7 +19,7 @@
 | [slides04r05](./slides04r05/) | 6 | 38 KB | 候选 |
 | [slides04r06](./slides04r06/) | 5 | 54 KB | 候选 |
 | [slides04r07](./slides04r07/) | 6 | 43 KB | 候选 |
-| [slides04r08](./slides04r08/) | 9 | 57 KB | ✅ 提交作品 |
+| [slides04r08](./slides04r08/) | 10 | 57 KB | ✅ 提交作品 |
 | [slides04r09](./slides04r09/) | 5 | 49 KB | 候选 |
 | [slides04r10](./slides04r10/) | 6 | 99 KB | 候选 |
 

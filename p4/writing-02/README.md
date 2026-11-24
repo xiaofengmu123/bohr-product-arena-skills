@@ -15,7 +15,7 @@
 | [writing02r01](./writing02r01/) | 6 | 59 KB | 候选 |
 | [writing02r02](./writing02r02/) | 6 | 60 KB | 候选 |
 | [writing02r03](./writing02r03/) | 6 | 63 KB | 候选 |
-| [writing02r04](./writing02r04/) | 6 | 59 KB | ✅ 提交作品 |
+| [writing02r04](./writing02r04/) | 7 | 59 KB | ✅ 提交作品 |
 | [writing02r05](./writing02r05/) | 6 | 58 KB | 候选 |
 | [writing02r06](./writing02r06/) | 6 | 59 KB | 候选 |
 | [writing02r07](./writing02r07/) | 7 | 57 KB | 候选 |

@@ -20,7 +20,7 @@
 | [slides02r06](./slides02r06/) | 6 | 50 KB | 候选 |
 | [slides02r07](./slides02r07/) | 6 | 46 KB | 候选 |
 | [slides02r08](./slides02r08/) | 6 | 84 KB | 候选 |
-| [slides02r09](./slides02r09/) | 5 | 36 KB | ✅ 提交作品 |
+| [slides02r09](./slides02r09/) | 6 | 36 KB | ✅ 提交作品 |
 | [slides02r10](./slides02r10/) | 5 | 42 KB | 候选 |
 
 ## 包内容速览

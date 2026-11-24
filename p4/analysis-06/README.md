@@ -15,7 +15,7 @@
 | [analysis06r01](./analysis06r01/) | 6 | 84 KB | 候选 |
 | [analysis06r02](./analysis06r02/) | 6 | 87 KB | 候选 |
 | [analysis06r03](./analysis06r03/) | 8 | 79 KB | 候选 |
-| [analysis06r04](./analysis06r04/) | 5 | 80 KB | ✅ 提交作品 |
+| [analysis06r04](./analysis06r04/) | 6 | 80 KB | ✅ 提交作品 |
 | [analysis06r05](./analysis06r05/) | 6 | 73 KB | 候选 |
 | [analysis06r06](./analysis06r06/) | 7 | 84 KB | 候选 |
 | [analysis06r07](./analysis06r07/) | 5 | 80 KB | 候选 |

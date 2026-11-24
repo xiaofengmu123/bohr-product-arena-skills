@@ -21,7 +21,7 @@
 | [search06r07](./search06r07/) | 6 | 60 KB | 候选 |
 | [search06r08](./search06r08/) | 6 | 61 KB | 候选 |
 | [search06r09](./search06r09/) | 5 | 41 KB | 候选 |
-| [search06r10](./search06r10/) | 6 | 54 KB | ✅ 提交作品 |
+| [search06r10](./search06r10/) | 7 | 54 KB | ✅ 提交作品 |
 
 ## 包内容速览
 

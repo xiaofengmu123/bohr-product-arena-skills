@@ -15,7 +15,7 @@
 | [graphics04r01](./graphics04r01/) | 6 | 77 KB | 候选 |
 | [graphics04r02](./graphics04r02/) | 6 | 55 KB | 候选 |
 | [graphics04r03](./graphics04r03/) | 6 | 52 KB | 候选 |
-| [graphics04r04](./graphics04r04/) | 6 | 52 KB | ✅ 提交作品 |
+| [graphics04r04](./graphics04r04/) | 7 | 52 KB | ✅ 提交作品 |
 | [graphics04r05](./graphics04r05/) | 6 | 54 KB | 候选 |
 | [graphics04r06](./graphics04r06/) | 6 | 67 KB | 候选 |
 | [graphics04r07](./graphics04r07/) | 7 | 67 KB | 候选 |

@@ -12,7 +12,7 @@
 
 | 包目录 | 文件数 | 大小 | 是否本次提交 |
 |---|---|---|---|
-| [graphics01r01](./graphics01r01/) | 6 | 66 KB | ✅ 提交作品 |
+| [graphics01r01](./graphics01r01/) | 7 | 66 KB | ✅ 提交作品 |
 | [graphics01r02](./graphics01r02/) | 6 | 58 KB | 候选 |
 | [graphics01r03](./graphics01r03/) | 6 | 57 KB | 候选 |
 | [graphics01r04](./graphics01r04/) | 6 | 80 KB | 候选 |

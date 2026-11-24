@@ -18,7 +18,7 @@
 | [writing05r04](./writing05r04/) | 8 | 57 KB | 候选 |
 | [writing05r05](./writing05r05/) | 6 | 44 KB | 候选 |
 | [writing05r06](./writing05r06/) | 7 | 54 KB | 候选 |
-| [writing05r07](./writing05r07/) | 6 | 44 KB | ✅ 提交作品 |
+| [writing05r07](./writing05r07/) | 7 | 45 KB | ✅ 提交作品 |
 | [writing05r08](./writing05r08/) | 6 | 41 KB | 候选 |
 | [writing05r09](./writing05r09/) | 5 | 34 KB | 候选 |
 | [writing05r10](./writing05r10/) | 7 | 45 KB | 候选 |

@@ -16,7 +16,7 @@
 | [research04r02](./research04r02/) | 6 | 68 KB | 候选 |
 | [research04r03](./research04r03/) | 8 | 97 KB | 候选 |
 | [research04r04](./research04r04/) | 6 | 71 KB | 候选 |
-| [research04r05](./research04r05/) | 6 | 66 KB | ✅ 提交作品 |
+| [research04r05](./research04r05/) | 7 | 66 KB | ✅ 提交作品 |
 | [research04r06](./research04r06/) | 6 | 74 KB | 候选 |
 | [research04r07](./research04r07/) | 5 | 61 KB | 候选 |
 | [research04r08](./research04r08/) | 6 | 67 KB | 候选 |

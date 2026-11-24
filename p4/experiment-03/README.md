@@ -19,7 +19,7 @@
 | [experiment03r05](./experiment03r05/) | 6 | 57 KB | 候选 |
 | [experiment03r06](./experiment03r06/) | 6 | 70 KB | 候选 |
 | [experiment03r07](./experiment03r07/) | 7 | 62 KB | 候选 |
-| [experiment03r08](./experiment03r08/) | 6 | 63 KB | ✅ 提交作品 |
+| [experiment03r08](./experiment03r08/) | 7 | 63 KB | ✅ 提交作品 |
 | [experiment03r09](./experiment03r09/) | 5 | 48 KB | 候选 |
 | [experiment03r10](./experiment03r10/) | 6 | 54 KB | 候选 |
 

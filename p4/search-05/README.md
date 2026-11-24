@@ -13,7 +13,7 @@
 | 包目录 | 文件数 | 大小 | 是否本次提交 |
 |---|---|---|---|
 | [search05r01](./search05r01/) | 6 | 93 KB | 候选 |
-| [search05r02](./search05r02/) | 6 | 72 KB | ✅ 提交作品 |
+| [search05r02](./search05r02/) | 7 | 72 KB | ✅ 提交作品 |
 | [search05r03](./search05r03/) | 6 | 71 KB | 候选 |
 | [search05r04](./search05r04/) | 6 | 83 KB | 候选 |
 | [search05r05](./search05r05/) | 6 | 86 KB | 候选 |

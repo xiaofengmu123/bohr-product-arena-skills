@@ -19,7 +19,7 @@
 | [search02r05](./search02r05/) | 6 | 56 KB | 候选 |
 | [search02r06](./search02r06/) | 6 | 85 KB | 候选 |
 | [search02r07](./search02r07/) | 6 | 59 KB | 候选 |
-| [search02r08](./search02r08/) | 6 | 67 KB | ✅ 提交作品 |
+| [search02r08](./search02r08/) | 7 | 68 KB | ✅ 提交作品 |
 | [search02r09](./search02r09/) | 5 | 47 KB | 候选 |
 | [search02r10](./search02r10/) | 6 | 78 KB | 候选 |
 

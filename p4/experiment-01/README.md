@@ -17,7 +17,7 @@
 | [experiment01r03](./experiment01r03/) | 5 | 42 KB | 候选 |
 | [experiment01r04](./experiment01r04/) | 6 | 62 KB | 候选 |
 | [experiment01r05](./experiment01r05/) | 6 | 53 KB | 候选 |
-| [experiment01r06](./experiment01r06/) | 6 | 130 KB | ✅ 提交作品 |
+| [experiment01r06](./experiment01r06/) | 7 | 131 KB | ✅ 提交作品 |
 | [experiment01r07](./experiment01r07/) | 6 | 53 KB | 候选 |
 | [experiment01r08](./experiment01r08/) | 6 | 59 KB | 候选 |
 | [experiment01r09](./experiment01r09/) | 5 | 75 KB | 候选 |

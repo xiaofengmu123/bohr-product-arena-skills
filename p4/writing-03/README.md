@@ -18,7 +18,7 @@
 | [writing03r04](./writing03r04/) | 7 | 44 KB | 候选 |
 | [writing03r05](./writing03r05/) | 6 | 60 KB | 候选 |
 | [writing03r06](./writing03r06/) | 8 | 45 KB | 候选 |
-| [writing03r07](./writing03r07/) | 6 | 49 KB | ✅ 提交作品 |
+| [writing03r07](./writing03r07/) | 7 | 50 KB | ✅ 提交作品 |
 | [writing03r08](./writing03r08/) | 6 | 39 KB | 候选 |
 | [writing03r09](./writing03r09/) | 4 | 24 KB | 候选 |
 | [writing03r10](./writing03r10/) | 6 | 39 KB | 候选 |

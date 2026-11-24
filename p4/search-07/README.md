@@ -18,7 +18,7 @@
 | [search07r04](./search07r04/) | 6 | 76 KB | 候选 |
 | [search07r05](./search07r05/) | 6 | 81 KB | 候选 |
 | [search07r06](./search07r06/) | 6 | 88 KB | 候选 |
-| [search07r07](./search07r07/) | 7 | 61 KB | ✅ 提交作品 |
+| [search07r07](./search07r07/) | 8 | 61 KB | ✅ 提交作品 |
 | [search07r09](./search07r09/) | 4 | 78 KB | 候选 |
 
 ## 包内容速览
